@@ -3,10 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>纯前端国际象棋 (完整视听版)</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <title>纯前端国际象棋 (高清点击版)</title>
     <style>
-        body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; }
+        body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; user-select: none; }
         .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
         .controls { margin-bottom: 20px; }
         input { padding: 8px 12px; margin: 5px; font-size: 14px; width: 130px; border: 1px solid #ccc; border-radius: 4px;}
@@ -16,35 +15,35 @@
         #room-info { display: none; background: #e3f2fd; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         #room-id-text { font-size: 24px; font-weight: bold; color: #d32f2f; letter-spacing: 2px; margin: 5px 0;}
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
-        #board { width: 100%; max-width: 450px; margin: auto; }
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
         
-        /* ========================================== */
-        /* UI 特效样式 (点击选中、落点提示、将军红光) */
-        /* ========================================== */
+        /* 纯手工打造的棋盘网格，支持原生点击 */
+        #board { display: none; grid-template-columns: repeat(8, 1fr); width: 100%; max-width: 450px; margin: 0 auto; border: 4px solid #444; border-radius: 2px; }
+        .square { aspect-ratio: 1; display: flex; justify-content: center; align-items: center; cursor: pointer; position: relative; }
+        
+        .white-sq { background-color: #f0d9b5; }
+        .black-sq { background-color: #b58863; }
+        
+        /* UI 特效 */
         .highlight-select { background-color: #baca44 !important; }
-        .highlight-hint { position: relative; }
-        /* 使用伪元素画出半透明的小圆点作为可走提示 */
         .highlight-hint::after { 
             content: ''; width: 26%; height: 26%; 
             background-color: rgba(0,0,0,0.25); 
             border-radius: 50%; position: absolute; 
-            left: 37%; top: 37%; 
             pointer-events: none; /* 防止圆点遮挡点击事件 */
         }
-        /* 将军状态：强烈的红光内阴影 */
-        .in-check { 
-            box-shadow: inset 0 0 25px red !important; 
-            background-color: #ffcdd2 !important; 
-        }
+        .in-check { box-shadow: inset 0 0 25px red !important; background-color: #ffcdd2 !important; }
+        
+        /* 棋子图片，禁用原生指针事件，让点击穿透到方格上 */
+        .piece-img { width: 90%; height: 90%; pointer-events: none; user-select: none; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>♟️ 实时联机象棋 (视听增强版)</h2>
+    <h2>♟️ 实时联机象棋 (纯享点击版)</h2>
     
-    <div id="network-warning">⚠️ 检测到通信被拦截。当前仅支持本地单机双人操作。</div>
+    <div id="network-warning">⚠️ 检测到通信被拦截。当前仅支持同屏单机对战。</div>
 
     <div class="controls" id="setup-panel">
         <button onclick="createRoom()">新建房间 (执白)</button>
@@ -63,15 +62,13 @@
     <div id="board"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+<!-- 仅需 2 个核心库，极大提升加载成功率 -->
 <script src="https://cdn.jsdelivr.net/npm/chess.js@0.10.3/chess.min.js"></script>
-<!-- 引入有效的 GoEasy jsDelivr 地址 -->
 <script src="https://cdn.jsdelivr.net/npm/goeasy" onerror="document.getElementById('network-warning').style.display='block';"></script>
 
 <script>
     // ==========================================
-    // 1. 无依赖的底层音频合成器 (Web Audio API)
+    // 1. 无依赖原生合成音效 (永不 404)
     // ==========================================
     var audioCtx = null;
     function initAudio() {
@@ -96,37 +93,30 @@
         } catch(e) {}
     }
 
-    // 根据走子动作播放对应音效
     function playAudioFeedback(move) {
         if (game.in_checkmate()) {
-            // 将杀：绝望的低音沉降
             playTone(150, 'sawtooth', 1.0, 0.8);
             setTimeout(() => playTone(100, 'sawtooth', 1.5, 0.8), 200);
         } else if (game.in_check()) {
-            // 将军：急促的警告双重音
             playTone(600, 'square', 0.15, 0.2);
             setTimeout(() => playTone(800, 'square', 0.2, 0.2), 150);
         } else if (move && move.captured) {
-            // 吃子：清脆的拔高音
             playTone(800, 'triangle', 0.1, 0.3);
             playTone(400, 'triangle', 0.15, 0.3);
         } else {
-            // 正常落子：沉闷的“哒”声
             playTone(300, 'sine', 0.1, 0.3);
         }
     }
-
 
     // ==========================================
     // 2. 初始化网络与游戏状态
     // ==========================================
     var goeasy = null;
     var isNetworkReady = false;
-    var board = null;
     var game = new Chess();
     var currentRoom = "";
     var myColor = "white";
-    var selectedSquare = null; // 用于记录当前点击选中的格子
+    var selectedSquare = null;
 
     if (typeof GoEasy !== 'undefined') {
         goeasy = GoEasy.getInstance({
@@ -141,7 +131,7 @@
     }
 
     function createRoom() {
-        initAudio(); // 用户点击按钮时激活音频上下文
+        initAudio(); 
         if (!isNetworkReady) return alert("当前离线，仅支持同机双人对战。");
         myColor = "white"; 
         var roomId = Math.floor(1000 + Math.random() * 9000).toString();
@@ -165,8 +155,11 @@
         document.getElementById('setup-panel').style.display = 'none';
         document.getElementById('room-info').style.display = 'block';
         document.getElementById('room-id-text').innerText = roomId;
+        
         document.getElementById('status').style.display = 'block';
-        initBoard();
+        document.getElementById('board').style.display = 'grid';
+        drawBoardDOM();
+        updateBoardState();
     }
 
     function connectRoom(roomId) {
@@ -177,115 +170,124 @@
                 var data = JSON.parse(msg.content);
                 if(data.type === 'move') {
                     game.load(data.fen);      
-                    board.position(data.fen); 
-                    clearSelection();
-                    handleMoveAftermath(data.moveInfo, false); // 接收对手走子，播放音效，不二次广播
+                    selectedSquare = null;
+                    updateBoardState();
+                    handleMoveAftermath(data.moveInfo, false);
                 }
             }
         });
     }
 
     // ==========================================
-    // 3. UI 交互：融合“拖拽”与“点击”双操作
+    // 3. 纯手工高清网格渲染 (完美支持点击)
     // ==========================================
-    function initBoard() {
-        var config = {
-            draggable: true,
-            position: 'start',
-            // 采用 jsdelivr 读取 github 原仓库的高清图片
-            pieceTheme: 'https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@master/website/img/chesspieces/wikipedia/{piece}.png',
-            onDragStart: onDragStart,
-            onDrop: onDrop,
-            onSnapEnd: onSnapEnd
-        };
-        board = Chessboard('board', config);
-        if(myColor === 'black') board.orientation('black');
-        updateStatusText();
-    }
+    function drawBoardDOM() {
+        var boardDiv = document.getElementById('board');
+        boardDiv.innerHTML = ''; 
+        var ranks = myColor === 'black' ? [1,2,3,4,5,6,7,8] : [8,7,6,5,4,3,2,1];
+        var files = myColor === 'black' ? ['h','g','f','e','d','c','b','a'] : ['a','b','c','d','e','f','g','h'];
 
-    // 拖拽逻辑
-    function onDragStart(source, piece, position, orientation) {
-        if (game.game_over()) return false;
-        clearSelection(); // 开始拖拽时清除点击选中的高亮
-        
-        if (isNetworkReady && currentRoom !== "") {
-            if ((myColor === 'white' && piece.search(/^b/) !== -1) ||
-                (myColor === 'black' && piece.search(/^w/) !== -1)) return false;
-            if ((game.turn() === 'w' && myColor === 'black') ||
-                (game.turn() === 'b' && myColor === 'white')) return false;
+        for (var r of ranks) {
+            for (var f of files) {
+                var sqDiv = document.createElement('div');
+                sqDiv.id = f + r; 
+                var fileIndex = f.charCodeAt(0) - 'a'.charCodeAt(0) + 1;
+                sqDiv.className = 'square ' + ((r + fileIndex) % 2 !== 0 ? 'white-sq' : 'black-sq');
+                
+                // 绑定原生点击事件
+                sqDiv.onclick = handleSquareClick;
+                boardDiv.appendChild(sqDiv);
+            }
         }
     }
 
-    function onDrop(source, target) {
-        var move = game.move({ from: source, to: target, promotion: 'q' });
-        if (move === null) return 'snapback';
-        handleMoveAftermath(move, true);
+    function updateBoardState() {
+        // 清理旧状态
+        document.querySelectorAll('.square').forEach(function(sq) {
+            sq.innerHTML = '';
+            sq.classList.remove('highlight-select', 'highlight-hint', 'in-check');
+        });
+
+        // 放置高清图片棋子
+        var files = ['a','b','c','d','e','f','g','h'];
+        for (var r = 1; r <= 8; r++) {
+            for (var c = 0; c < 8; c++) {
+                var sqId = files[c] + r;
+                var pieceInfo = game.get(sqId); 
+                
+                if (pieceInfo) {
+                    // 组合官方图片名称，例如 wP, bK
+                    var pieceName = pieceInfo.color + pieceInfo.type.toUpperCase();
+                    var img = document.createElement('img');
+                    // 直接抓取 github 源文件，规避 npm 目录丢失问题
+                    img.src = 'https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@master/website/img/chesspieces/wikipedia/' + pieceName + '.png';
+                    img.className = 'piece-img';
+                    
+                    var targetSquare = document.getElementById(sqId);
+                    if(targetSquare) targetSquare.appendChild(img);
+                }
+            }
+        }
+        
+        // 渲染选中高亮和可行路线圆点
+        if (selectedSquare) {
+            var selectedSqEl = document.getElementById(selectedSquare);
+            if (selectedSqEl) selectedSqEl.classList.add('highlight-select');
+            
+            var moves = game.moves({ square: selectedSquare, verbose: true });
+            for (var i = 0; i < moves.length; i++) {
+                var hintSquare = document.getElementById(moves[i].to);
+                if(hintSquare) hintSquare.classList.add('highlight-hint');
+            }
+        }
+
+        updateCheckVisuals();
+        updateStatusText();
     }
-    
-    function onSnapEnd() { board.position(game.fen()); }
 
-
-    // 【新增】纯点击操作逻辑 (事件委托机制)
-    $('#board').on('click', '.square-55d63', function () {
+    // ==========================================
+    // 4. 纯净点击交互逻辑
+    // ==========================================
+    function handleSquareClick(e) {
         if (game.game_over()) return;
         
-        // 限制操作权限
+        // 联机状态下限制操作权限
         if (isNetworkReady && currentRoom !== "") {
             var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
             if (currentTurnColor !== myColor) return;
         }
 
-        var sq = $(this).attr('data-square'); // 获取点击的格子坐标(如 e2)
-
+        var sqId = e.currentTarget.id;
+        
         if (selectedSquare) {
-            // 尝试从选中的格子移动到当前点击的格子
-            var move = game.move({ from: selectedSquare, to: sq, promotion: 'q' });
+            // 尝试移动
+            var move = game.move({ from: selectedSquare, to: sqId, promotion: 'q' });
             if (move) {
-                clearSelection();
-                board.position(game.fen()); // 更新UI
+                selectedSquare = null;
+                updateBoardState();
                 handleMoveAftermath(move, true);
             } else {
-                // 如果没走成，看是不是点击了自己的其他棋子，如果是则切换选中
-                var piece = game.get(sq);
+                // 点击了自己的其他棋子，切换选中
+                var piece = game.get(sqId);
                 if (piece && piece.color === game.turn()) {
-                    selectedSquare = sq;
-                    renderHighlights();
+                    selectedSquare = sqId;
+                    updateBoardState();
                 } else {
-                    clearSelection();
+                    selectedSquare = null;
+                    updateBoardState();
                 }
             }
         } else {
-            // 当前没有选中棋子，尝试选中自己的棋子
-            var piece = game.get(sq);
+            // 首次选中
+            var piece = game.get(sqId);
             if (piece && piece.color === game.turn()) {
-                selectedSquare = sq;
-                renderHighlights();
+                selectedSquare = sqId;
+                updateBoardState();
             }
         }
-    });
-
-    // ==========================================
-    // 4. 视觉高亮渲染与状态结算
-    // ==========================================
-    function clearSelection() {
-        selectedSquare = null;
-        $('#board .square-55d63').removeClass('highlight-select highlight-hint');
     }
 
-    function renderHighlights() {
-        clearSelection();
-        if (!selectedSquare) return;
-        // 高亮当前选中的棋子
-        $('#board .square-' + selectedSquare).addClass('highlight-select');
-        // 获取所有合法的落点并标记小圆点
-        var moves = game.moves({ square: selectedSquare, verbose: true });
-        for (var i = 0; i < moves.length; i++) {
-            $('#board .square-' + moves[i].to).addClass('highlight-hint');
-        }
-        updateCheckVisuals(); // 保持将军的红光依然显示
-    }
-
-    // 走完一步棋后的收尾工作：视觉、听觉、网络同步
+    // 走子结算
     function handleMoveAftermath(move, shouldBroadcast) {
         updateCheckVisuals();
         playAudioFeedback(move);
@@ -297,13 +299,12 @@
                     channel: currentRoom,
                     message: JSON.stringify({ type: 'move', fen: game.fen(), moveInfo: move })
                 });
-            } catch(e){}
+            } catch(err){}
         }
     }
 
-    // 扫描棋盘，如果是将军状态，让被将的“王”散发红光
+    // 将军红光警报
     function updateCheckVisuals() {
-        $('#board .square-55d63').removeClass('in-check'); // 清除旧红光
         if (game.in_check() || game.in_checkmate()) {
             var turn = game.turn();
             var files = ['a','b','c','d','e','f','g','h'];
@@ -312,7 +313,8 @@
                     var sq = files[c] + r;
                     var p = game.get(sq);
                     if (p && p.type === 'k' && p.color === turn) {
-                        $('#board .square-' + sq).addClass('in-check');
+                        var el = document.getElementById(sq);
+                        if(el) el.classList.add('in-check');
                         return;
                     }
                 }
@@ -323,7 +325,6 @@
     function updateStatusText() {
         var statusEl = document.getElementById('status');
         var turnColor = game.turn() === 'w' ? '白方' : '黑方';
-        
         if (game.in_checkmate()) {
             statusEl.innerText = '游戏结束，' + turnColor + ' 被将死！';
         } else if (game.in_draw()) {
@@ -334,7 +335,7 @@
                 if (game.in_check()) txt += ' (⚠️ 将军！)';
                 statusEl.innerText = txt;
             } else {
-                var txt = `本地模式 | 当前轮到: ${turnColor}`;
+                var txt = `本地单机模式 | 当前轮到: ${turnColor}`;
                 if (game.in_check()) txt += ' (⚠️ 将军！)';
                 statusEl.innerText = txt;
             }
@@ -343,7 +344,9 @@
 
     window.onload = function() {
         document.getElementById('status').style.display = 'block';
-        initBoard(); 
+        document.getElementById('board').style.display = 'grid';
+        drawBoardDOM();
+        updateBoardState();
     }
 </script>
 </body>
