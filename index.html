@@ -2,9 +2,8 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>纯前端国际象棋 (网络获取高清版)</title>
-    <!-- 从网络获取 chessboard.js 的官方样式表 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>纯前端国际象棋 (完整视听版)</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
     <style>
         body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; }
@@ -18,16 +17,34 @@
         #room-id-text { font-size: 24px; font-weight: bold; color: #d32f2f; letter-spacing: 2px; margin: 5px 0;}
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
         #board { width: 100%; max-width: 450px; margin: auto; }
-        
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
+        
+        /* ========================================== */
+        /* UI 特效样式 (点击选中、落点提示、将军红光) */
+        /* ========================================== */
+        .highlight-select { background-color: #baca44 !important; }
+        .highlight-hint { position: relative; }
+        /* 使用伪元素画出半透明的小圆点作为可走提示 */
+        .highlight-hint::after { 
+            content: ''; width: 26%; height: 26%; 
+            background-color: rgba(0,0,0,0.25); 
+            border-radius: 50%; position: absolute; 
+            left: 37%; top: 37%; 
+            pointer-events: none; /* 防止圆点遮挡点击事件 */
+        }
+        /* 将军状态：强烈的红光内阴影 */
+        .in-check { 
+            box-shadow: inset 0 0 25px red !important; 
+            background-color: #ffcdd2 !important; 
+        }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>♟️ 实时联机象棋 (高清图版)</h2>
+    <h2>♟️ 实时联机象棋 (视听增强版)</h2>
     
-    <div id="network-warning">⚠️ 检测到通信脚本被拦截（可能是广告插件或安全网关导致）。当前仅支持本地单机双人操作。</div>
+    <div id="network-warning">⚠️ 检测到通信被拦截。当前仅支持本地单机双人操作。</div>
 
     <div class="controls" id="setup-panel">
         <button onclick="createRoom()">新建房间 (执白)</button>
@@ -43,55 +60,89 @@
     </div>
 
     <div id="status">正在初始化游戏...</div>
-    <!-- 棋盘容器，交由 chessboard.js 接管 -->
     <div id="board"></div>
 </div>
 
-<!-- ========================================== -->
-<!-- 全部通过极速网络 CDN 获取 JS 文件 -->
-<!-- ========================================== -->
 <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chess.js@0.10.3/chess.min.js"></script>
+<!-- 引入有效的 GoEasy jsDelivr 地址 -->
 <script src="https://cdn.jsdelivr.net/npm/goeasy" onerror="document.getElementById('network-warning').style.display='block';"></script>
 
 <script>
     // ==========================================
-    // 1. 初始化 GoEasy 网络服务
+    // 1. 无依赖的底层音频合成器 (Web Audio API)
+    // ==========================================
+    var audioCtx = null;
+    function initAudio() {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    function playTone(freq, type, duration, vol) {
+        try {
+            initAudio();
+            var osc = audioCtx.createOscillator();
+            var gain = audioCtx.createGain();
+            osc.type = type;
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            var now = audioCtx.currentTime;
+            osc.frequency.setValueAtTime(freq, now);
+            gain.gain.setValueAtTime(vol, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+            osc.start(now);
+            osc.stop(now + duration);
+        } catch(e) {}
+    }
+
+    // 根据走子动作播放对应音效
+    function playAudioFeedback(move) {
+        if (game.in_checkmate()) {
+            // 将杀：绝望的低音沉降
+            playTone(150, 'sawtooth', 1.0, 0.8);
+            setTimeout(() => playTone(100, 'sawtooth', 1.5, 0.8), 200);
+        } else if (game.in_check()) {
+            // 将军：急促的警告双重音
+            playTone(600, 'square', 0.15, 0.2);
+            setTimeout(() => playTone(800, 'square', 0.2, 0.2), 150);
+        } else if (move && move.captured) {
+            // 吃子：清脆的拔高音
+            playTone(800, 'triangle', 0.1, 0.3);
+            playTone(400, 'triangle', 0.15, 0.3);
+        } else {
+            // 正常落子：沉闷的“哒”声
+            playTone(300, 'sine', 0.1, 0.3);
+        }
+    }
+
+
+    // ==========================================
+    // 2. 初始化网络与游戏状态
     // ==========================================
     var goeasy = null;
     var isNetworkReady = false;
-
-    if (typeof GoEasy !== 'undefined') {
-        goeasy = GoEasy.getInstance({
-            host: "hangzhou.goeasy.io", 
-            appkey: "BC-58fd21e3fbff443587a9b9f35137cb4e", // 【关键：请填入你的 Common Key】
-            modules: ['pubsub']
-        });
-
-        goeasy.connect({
-            onSuccess: function() { 
-                isNetworkReady = true;
-                console.log("GoEasy 联机服务就绪"); 
-            },
-            onFailed: function(error) { 
-                console.warn("GoEasy 连接失败", error);
-                document.getElementById('network-warning').style.display='block';
-            }
-        });
-    }
-
-    // 全局游戏状态
     var board = null;
     var game = new Chess();
     var currentRoom = "";
     var myColor = "white";
+    var selectedSquare = null; // 用于记录当前点击选中的格子
 
-    // ==========================================
-    // 2. 房间控制逻辑
-    // ==========================================
+    if (typeof GoEasy !== 'undefined') {
+        goeasy = GoEasy.getInstance({
+            host: "hangzhou.goeasy.io", 
+            appkey: "BC-xxxxxxxxxxxxxxxxxxxxxxxx", // 【替换为你的 Appkey】
+            modules: ['pubsub']
+        });
+        goeasy.connect({
+            onSuccess: function() { isNetworkReady = true; console.log("联机就绪"); },
+            onFailed: function() { document.getElementById('network-warning').style.display='block'; }
+        });
+    }
+
     function createRoom() {
-        if (!isNetworkReady) return alert("网络通信被阻断，当前仅能在一台设备上轮流走子。");
+        initAudio(); // 用户点击按钮时激活音频上下文
+        if (!isNetworkReady) return alert("当前离线，仅支持同机双人对战。");
         myColor = "white"; 
         var roomId = Math.floor(1000 + Math.random() * 9000).toString();
         showGameUI(roomId);
@@ -99,7 +150,8 @@
     }
 
     function joinRoom() {
-        if (!isNetworkReady) return alert("网络通信被阻断，当前仅能在一台设备上轮流走子。");
+        initAudio(); 
+        if (!isNetworkReady) return alert("当前离线，仅支持同机双人对战。");
         var roomId = document.getElementById('room-input').value.trim();
         if(!roomId) return alert("请输入房间号！");
         myColor = "black"; 
@@ -114,11 +166,9 @@
         document.getElementById('room-info').style.display = 'block';
         document.getElementById('room-id-text').innerText = roomId;
         document.getElementById('status').style.display = 'block';
-        
         initBoard();
     }
 
-    // 接收对手的网络走子消息
     function connectRoom(roomId) {
         if(!goeasy) return;
         goeasy.pubsub.subscribe({
@@ -126,79 +176,148 @@
             onMessage: function(msg) {
                 var data = JSON.parse(msg.content);
                 if(data.type === 'move') {
-                    game.load(data.fen);      // 规则引擎更新
-                    board.position(data.fen); // UI 引擎更新
-                    updateStatusText();
+                    game.load(data.fen);      
+                    board.position(data.fen); 
+                    clearSelection();
+                    handleMoveAftermath(data.moveInfo, false); // 接收对手走子，播放音效，不二次广播
                 }
             }
         });
     }
 
     // ==========================================
-    // 3. 高清棋盘与规则引擎初始化
+    // 3. UI 交互：融合“拖拽”与“点击”双操作
     // ==========================================
     function initBoard() {
         var config = {
             draggable: true,
             position: 'start',
-            // 【关键修复】：强制使用 jsDelivr 加载官方图片，彻底告别 404
+            // 采用 jsdelivr 读取 github 原仓库的高清图片
             pieceTheme: 'https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@master/website/img/chesspieces/wikipedia/{piece}.png',
             onDragStart: onDragStart,
             onDrop: onDrop,
             onSnapEnd: onSnapEnd
         };
-        
         board = Chessboard('board', config);
-        
-        // 黑方翻转棋盘视角
-        if(myColor === 'black') {
-            board.orientation('black');
-        }
-        
+        if(myColor === 'black') board.orientation('black');
         updateStatusText();
     }
 
-    // 拖拽前检查：只允许拖动自己颜色的棋子，且必须轮到自己
+    // 拖拽逻辑
     function onDragStart(source, piece, position, orientation) {
         if (game.game_over()) return false;
+        clearSelection(); // 开始拖拽时清除点击选中的高亮
         
-        // 联机模式下，限制只能操作自己的棋子
         if (isNetworkReady && currentRoom !== "") {
             if ((myColor === 'white' && piece.search(/^b/) !== -1) ||
-                (myColor === 'black' && piece.search(/^w/) !== -1)) {
-                return false;
-            }
+                (myColor === 'black' && piece.search(/^w/) !== -1)) return false;
             if ((game.turn() === 'w' && myColor === 'black') ||
-                (game.turn() === 'b' && myColor === 'white')) {
-                return false;
+                (game.turn() === 'b' && myColor === 'white')) return false;
+        }
+    }
+
+    function onDrop(source, target) {
+        var move = game.move({ from: source, to: target, promotion: 'q' });
+        if (move === null) return 'snapback';
+        handleMoveAftermath(move, true);
+    }
+    
+    function onSnapEnd() { board.position(game.fen()); }
+
+
+    // 【新增】纯点击操作逻辑 (事件委托机制)
+    $('#board').on('click', '.square-55d63', function () {
+        if (game.game_over()) return;
+        
+        // 限制操作权限
+        if (isNetworkReady && currentRoom !== "") {
+            var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
+            if (currentTurnColor !== myColor) return;
+        }
+
+        var sq = $(this).attr('data-square'); // 获取点击的格子坐标(如 e2)
+
+        if (selectedSquare) {
+            // 尝试从选中的格子移动到当前点击的格子
+            var move = game.move({ from: selectedSquare, to: sq, promotion: 'q' });
+            if (move) {
+                clearSelection();
+                board.position(game.fen()); // 更新UI
+                handleMoveAftermath(move, true);
+            } else {
+                // 如果没走成，看是不是点击了自己的其他棋子，如果是则切换选中
+                var piece = game.get(sq);
+                if (piece && piece.color === game.turn()) {
+                    selectedSquare = sq;
+                    renderHighlights();
+                } else {
+                    clearSelection();
+                }
+            }
+        } else {
+            // 当前没有选中棋子，尝试选中自己的棋子
+            var piece = game.get(sq);
+            if (piece && piece.color === game.turn()) {
+                selectedSquare = sq;
+                renderHighlights();
             }
         }
+    });
+
+    // ==========================================
+    // 4. 视觉高亮渲染与状态结算
+    // ==========================================
+    function clearSelection() {
+        selectedSquare = null;
+        $('#board .square-55d63').removeClass('highlight-select highlight-hint');
     }
 
-    // 拖拽放下：验证规则并发送网络消息
-    function onDrop(source, target) {
-        var move = game.move({
-            from: source,
-            to: target,
-            promotion: 'q' // 简易处理：兵升变强制为后
-        });
-
-        if (move === null) return 'snapback'; // 不合法走法，自动弹回原位
-
-        // 走法合法，立刻将最新的 FEN 发送给对手
-        if (isNetworkReady && currentRoom !== "") {
-            goeasy.pubsub.publish({
-                channel: currentRoom,
-                message: JSON.stringify({ type: 'move', fen: game.fen() })
-            });
+    function renderHighlights() {
+        clearSelection();
+        if (!selectedSquare) return;
+        // 高亮当前选中的棋子
+        $('#board .square-' + selectedSquare).addClass('highlight-select');
+        // 获取所有合法的落点并标记小圆点
+        var moves = game.moves({ square: selectedSquare, verbose: true });
+        for (var i = 0; i < moves.length; i++) {
+            $('#board .square-' + moves[i].to).addClass('highlight-hint');
         }
-        
-        updateStatusText();
+        updateCheckVisuals(); // 保持将军的红光依然显示
     }
 
-    // 保证特殊走法（如王车易位、吃过路兵）的动画渲染正确
-    function onSnapEnd() {
-        board.position(game.fen());
+    // 走完一步棋后的收尾工作：视觉、听觉、网络同步
+    function handleMoveAftermath(move, shouldBroadcast) {
+        updateCheckVisuals();
+        playAudioFeedback(move);
+        updateStatusText();
+
+        if (shouldBroadcast && isNetworkReady && currentRoom !== "") {
+            try {
+                goeasy.pubsub.publish({
+                    channel: currentRoom,
+                    message: JSON.stringify({ type: 'move', fen: game.fen(), moveInfo: move })
+                });
+            } catch(e){}
+        }
+    }
+
+    // 扫描棋盘，如果是将军状态，让被将的“王”散发红光
+    function updateCheckVisuals() {
+        $('#board .square-55d63').removeClass('in-check'); // 清除旧红光
+        if (game.in_check() || game.in_checkmate()) {
+            var turn = game.turn();
+            var files = ['a','b','c','d','e','f','g','h'];
+            for (var r = 1; r <= 8; r++) {
+                for (var c = 0; c < 8; c++) {
+                    var sq = files[c] + r;
+                    var p = game.get(sq);
+                    if (p && p.type === 'k' && p.color === turn) {
+                        $('#board .square-' + sq).addClass('in-check');
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     function updateStatusText() {
@@ -222,7 +341,6 @@
         }
     }
 
-    // 页面加载完成后，若未能建房则默认显示一个空棋盘供预览
     window.onload = function() {
         document.getElementById('status').style.display = 'block';
         initBoard(); 
