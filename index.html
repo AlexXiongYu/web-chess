@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>纯前端国际象棋 (完美联机版)</title>
+    <title>纯前端国际象棋 (完整体验版)</title>
     <style>
         body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
         .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
@@ -20,34 +20,48 @@
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
         
-        #game-controls { display: none; margin-bottom: 15px; }
+        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; }
         .btn-warning { background-color: #ff9800 !important; }
         .btn-warning:hover { background-color: #e68a00 !important; }
         .btn-danger { background-color: #dc3545 !important; }
         .btn-danger:hover { background-color: #c82333 !important; }
+        .btn-info { background-color: #17a2b8 !important; }
+        .btn-info:hover { background-color: #138496 !important; }
 
-        #emoji-bar { display: none; justify-content: center; gap: 15px; margin-bottom: 15px; background: #f8f9fa; padding: 10px; border-radius: 30px; }
-        .emoji-btn { font-size: 24px; cursor: pointer; transition: transform 0.2s; }
+        /* Emoji 面板样式 */
+        #emoji-container { position: relative; display: inline-block; }
+        #emoji-panel {
+            display: none; position: absolute; bottom: 45px; left: 50%; transform: translateX(-50%);
+            background: white; border: 1px solid #ddd; border-radius: 12px; padding: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            grid-template-columns: repeat(5, 1fr); gap: 12px; z-index: 100; width: 260px;
+        }
+        .emoji-btn { font-size: 28px; cursor: pointer; transition: transform 0.2s; }
         .emoji-btn:hover { transform: scale(1.3); }
 
         .floating-emoji {
-            position: fixed; bottom: 20%; font-size: 60px; pointer-events: none; z-index: 1000;
-            animation: floatUp 2s ease-out forwards;
+            position: fixed; bottom: 20%; font-size: 65px; pointer-events: none; z-index: 1000;
+            animation: floatUp 2.5s ease-out forwards;
         }
         @keyframes floatUp {
             0% { opacity: 0; transform: translateY(0) scale(0.5); }
-            20% { opacity: 1; transform: translateY(-20px) scale(1.2); }
-            100% { opacity: 0; transform: translateY(-150px) scale(1); }
+            15% { opacity: 1; transform: translateY(-30px) scale(1.2); }
+            100% { opacity: 0; transform: translateY(-200px) scale(1); }
         }
 
+        /* 棋盘样式 */
         #board { display: none; grid-template-columns: repeat(8, 1fr); width: 100%; max-width: 450px; margin: 0 auto; border: 4px solid #444; border-radius: 2px; }
         .square { aspect-ratio: 1; display: flex; justify-content: center; align-items: center; cursor: pointer; position: relative; }
         .white-sq { background-color: #f0d9b5; }
         .black-sq { background-color: #b58863; }
         
+        /* 交互特效 */
         .highlight-select { background-color: #baca44 !important; }
         .highlight-hint::after { content: ''; width: 26%; height: 26%; background-color: rgba(0,0,0,0.25); border-radius: 50%; position: absolute; pointer-events: none; }
         .in-check { box-shadow: inset 0 0 25px red !important; background-color: #ffcdd2 !important; }
+        
+        /* 新增：上一步轨迹高亮 (半透明黄色遮罩) */
+        .last-move { background-color: rgba(255, 255, 0, 0.4) !important; }
         
         .piece-img { width: 90%; height: 90%; pointer-events: none; user-select: none; }
     </style>
@@ -75,18 +89,29 @@
 
     <div id="status">正在初始化游戏...</div>
     
-    <div id="emoji-bar">
-        <div class="emoji-btn" onclick="sendEmoji('👋')">👋</div>
-        <div class="emoji-btn" onclick="sendEmoji('😂')">😂</div>
-        <div class="emoji-btn" onclick="sendEmoji('😭')">😭</div>
-        <div class="emoji-btn" onclick="sendEmoji('😡')">😡</div>
-        <div class="emoji-btn" onclick="sendEmoji('👏')">👏</div>
-        <div class="emoji-btn" onclick="sendEmoji('⌛')">⌛</div>
-    </div>
-
     <div id="game-controls">
-        <button class="btn-warning" onclick="requestUndo()">🔙 悔棋 (需同意)</button>
-        <button class="btn-danger" id="restart-btn" onclick="requestRestart()">🔄 重开一局</button>
+        <div id="emoji-container">
+            <button class="btn-info" onclick="toggleEmojiPanel()">😀 发表情</button>
+            <div id="emoji-panel">
+                <div class="emoji-btn" onclick="sendEmoji('👋')">👋</div>
+                <div class="emoji-btn" onclick="sendEmoji('😂')">😂</div>
+                <div class="emoji-btn" onclick="sendEmoji('😭')">😭</div>
+                <div class="emoji-btn" onclick="sendEmoji('😡')">😡</div>
+                <div class="emoji-btn" onclick="sendEmoji('👏')">👏</div>
+                <div class="emoji-btn" onclick="sendEmoji('⌛')">⌛</div>
+                <div class="emoji-btn" onclick="sendEmoji('👍')">👍</div>
+                <div class="emoji-btn" onclick="sendEmoji('👎')">👎</div>
+                <div class="emoji-btn" onclick="sendEmoji('🤔')">🤔</div>
+                <div class="emoji-btn" onclick="sendEmoji('😅')">😅</div>
+                <div class="emoji-btn" onclick="sendEmoji('😱')">😱</div>
+                <div class="emoji-btn" onclick="sendEmoji('🎉')">🎉</div>
+                <div class="emoji-btn" onclick="sendEmoji('🤝')">🤝</div>
+                <div class="emoji-btn" onclick="sendEmoji('🙏')">🙏</div>
+                <div class="emoji-btn" onclick="sendEmoji('👀')">👀</div>
+            </div>
+        </div>
+        <button class="btn-warning" onclick="requestUndo()">🔙 悔棋</button>
+        <button class="btn-danger" id="restart-btn" onclick="requestRestart()">🔄 重开</button>
     </div>
 
     <div id="board"></div>
@@ -159,16 +184,16 @@
         });
     }
 
+    // 通用广播函数，同时发送 fen 和保存历史的 pgn
     function broadcast(payload) {
         if (!isNetworkReady || currentRoom === "") return;
         payload.sender = myColor; 
-        try {
-            goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify(payload) });
-        } catch(e) {}
+        try { goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify(payload) }); } 
+        catch(e) {}
     }
 
     // ==========================================
-    // 3. 房间管理与持久化
+    // 3. 房间管理与持久化 (改用 PGN 记录历史)
     // ==========================================
     function checkSavedGame() {
         var saved = localStorage.getItem('chessSave');
@@ -176,7 +201,7 @@
     }
 
     function saveGameToLocal() {
-        var data = { roomId: currentRoom, color: myColor, fen: game.fen() };
+        var data = { roomId: currentRoom, color: myColor, fen: game.fen(), pgn: game.pgn() };
         localStorage.setItem('chessSave', JSON.stringify(data));
     }
 
@@ -217,7 +242,13 @@
         
         currentRoom = savedData.roomId;
         myColor = savedData.color;
-        game.load(savedData.fen); 
+        
+        // 优先加载含历史记录的 PGN
+        if (savedData.pgn) {
+            game.load_pgn(savedData.pgn);
+        } else {
+            game.load(savedData.fen);
+        }
         
         document.getElementById('room-tip').innerText = "断线重连成功";
         showGameUI(currentRoom);
@@ -231,8 +262,7 @@
         document.getElementById('room-id-text').innerText = roomId;
         
         document.getElementById('status').style.display = 'block';
-        document.getElementById('game-controls').style.display = 'block';
-        document.getElementById('emoji-bar').style.display = 'flex';
+        document.getElementById('game-controls').style.display = 'flex';
         document.getElementById('board').style.display = 'grid';
         drawBoardDOM();
         updateBoardState();
@@ -247,13 +277,14 @@
             channel: roomId,
             onMessage: function(msg) {
                 var data = JSON.parse(msg.content);
+                if(data.sender === myColor) return; // 拦截自己发出的重复消息
                 
-                if(data.sender === myColor) return;
-                
-                // --- 棋盘同步 ---
+                // --- 棋盘同步 (优先应用 PGN 保证历史记录不丢) ---
                 if(data.type === 'move' || data.type === 'sync') {
                     if(game.fen() !== data.fen) {
-                        game.load(data.fen);      
+                        if (data.pgn) game.load_pgn(data.pgn);
+                        else game.load(data.fen);      
+                        
                         selectedSquare = null;
                         updateBoardState();
                         if(data.type === 'move') handleMoveAftermath(data.moveInfo, false);
@@ -263,7 +294,7 @@
                 
                 if(data.type === 'request_sync') {
                     if (game.history().length > 0) {
-                        broadcast({ type: 'sync', fen: game.fen() });
+                        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn() });
                     }
                 }
 
@@ -276,8 +307,8 @@
                     }
                 }
                 if(data.type === 'agree_undo') {
-                    alert("对手同意悔棋！");
-                    executeUndo(); // 发起方收到同意后执行
+                    // 对方同意后，静默执行退步并直接更新界面
+                    executeUndo(); 
                 }
                 if(data.type === 'reject_undo') {
                     alert("对手无情地拒绝了你的悔棋请求。");
@@ -294,7 +325,7 @@
                     }
                 }
                 if(data.type === 'agree_restart') {
-                    alert("对手同意重开，游戏重新开始！");
+                    // 不再弹窗，直接刷新重开
                     executeRestart();
                 }
                 if(data.type === 'reject_restart') {
@@ -318,12 +349,13 @@
     // ==========================================
 
     function requestUndo() {
-        if (game.history().length === 0) return alert("已经是开局状态了，无棋可悔。");
+        var historyLen = game.history().length;
+        if (historyLen === 0) return alert("已经是开局状态了，无棋可悔。");
 
         if (isNetworkReady && currentRoom !== "") {
+            // 智能步数检测拦截：如果我还没走过棋，不允许发起悔棋
             var currentTurn = game.turn() === 'w' ? 'white' : 'black';
-            // 如果是我的回合想悔棋，需要连退2步。所以如果一共才走了1步，是没法退的。
-            if (currentTurn === myColor && game.history().length < 2) {
+            if (currentTurn === myColor && historyLen < 2) {
                 return alert("你还没有走棋，无法悔棋。");
             }
 
@@ -338,16 +370,15 @@
 
     function executeUndo() {
         var steps = 1;
-        
-        // 智能判断退步数量
+        // 智能判断回撤步数
         if (isNetworkReady && currentRoom !== "") {
             var currentTurn = game.turn() === 'w' ? 'white' : 'black';
-            // 如果当前是我的回合（我被将死，或者对方刚走完我觉得我上一步走错了）
-            // 必须连退2步，撤回对方的反击和我的错棋，才能真正回到“让我重新走”的状态
-            if (currentTurn === myColor) {
-                steps = 2; 
-            }
+            // 如果轮到我走（说明我想推翻我上一步的错棋，并撤销对方的回应）
+            if (currentTurn === myColor) steps = 2; 
         }
+
+        var historyLen = game.history().length;
+        if (historyLen < steps) steps = historyLen; // 防止溢出
 
         for(var i = 0; i < steps; i++) {
             game.undo(); 
@@ -355,7 +386,8 @@
         
         selectedSquare = null;
         updateBoardState();
-        broadcast({ type: 'sync', fen: game.fen() }); // 强制对齐双端画面
+        document.getElementById('status').innerText = "已成功悔棋。";
+        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn() }); 
     }
 
     function requestRestart() {
@@ -373,11 +405,17 @@
         game.reset();
         selectedSquare = null;
         updateBoardState();
-        broadcast({ type: 'sync', fen: game.fen() }); // 强制重开对齐
+        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn() }); 
+    }
+
+    function toggleEmojiPanel() {
+        var panel = document.getElementById('emoji-panel');
+        panel.style.display = (panel.style.display === 'grid') ? 'none' : 'grid';
     }
 
     function sendEmoji(emojiStr) {
         initAudio();
+        document.getElementById('emoji-panel').style.display = 'none'; // 发送后自动关闭面板
         showFloatingEmoji(emojiStr, true); 
         broadcast({ type: 'emoji', value: emojiStr }); 
     }
@@ -388,13 +426,13 @@
         el.className = 'floating-emoji';
         
         el.style.left = isMe ? '75%' : '15%';
-        var randomOffset = Math.floor(Math.random() * 20) - 10;
+        var randomOffset = Math.floor(Math.random() * 30) - 15;
         el.style.marginLeft = randomOffset + 'px';
 
         document.body.appendChild(el);
         playTone(isMe ? 800 : 500, 'sine', 0.1, 0.1);
 
-        setTimeout(function() { el.remove(); }, 2000);
+        setTimeout(function() { el.remove(); }, 2500);
     }
 
     // ==========================================
@@ -419,11 +457,23 @@
     }
 
     function updateBoardState() {
+        // 1. 清理全部特效和棋子
         document.querySelectorAll('.square').forEach(function(sq) {
             sq.innerHTML = '';
-            sq.classList.remove('highlight-select', 'highlight-hint', 'in-check');
+            sq.classList.remove('highlight-select', 'highlight-hint', 'in-check', 'last-move');
         });
 
+        // 2. 渲染上一步的轨迹高亮
+        var history = game.history({ verbose: true });
+        if (history.length > 0) {
+            var lastMove = history[history.length - 1];
+            var fromSq = document.getElementById(lastMove.from);
+            var toSq = document.getElementById(lastMove.to);
+            if (fromSq) fromSq.classList.add('last-move');
+            if (toSq) toSq.classList.add('last-move');
+        }
+
+        // 3. 渲染当前棋子
         var files = ['a','b','c','d','e','f','g','h'];
         for (var r = 1; r <= 8; r++) {
             for (var c = 0; c < 8; c++) {
@@ -441,6 +491,7 @@
             }
         }
         
+        // 4. 渲染当前选中与提示路线
         if (selectedSquare) {
             var selectedSqEl = document.getElementById(selectedSquare);
             if (selectedSqEl) selectedSqEl.classList.add('highlight-select');
@@ -498,7 +549,7 @@
         updateStatusText();
 
         if (shouldBroadcast) {
-            broadcast({ type: 'move', fen: game.fen(), moveInfo: move });
+            broadcast({ type: 'move', fen: game.fen(), pgn: game.pgn(), moveInfo: move });
         }
     }
 
@@ -542,6 +593,15 @@
             }
         }
     }
+
+    // 点击页面其他地方自动关闭表情面板
+    document.addEventListener('click', function(event) {
+        var panel = document.getElementById('emoji-panel');
+        var btn = document.querySelector('.btn-info');
+        if (panel && panel.style.display === 'grid' && event.target !== btn && !panel.contains(event.target)) {
+            panel.style.display = 'none';
+        }
+    });
 
     window.onload = function() {
         document.getElementById('status').style.display = 'block';
