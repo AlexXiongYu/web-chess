@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>纯前端国际象棋联网对战</title>
+    <!-- 全面替换为国内极稳定的 Staticfile CDN -->
+    <link rel="stylesheet" href="https://cdn.staticfile.net/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+    <style>
+        body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .controls { margin-bottom: 20px; }
+        input { padding: 8px 12px; margin: 5px; font-size: 14px; width: 150px; border: 1px solid #ccc; border-radius: 4px;}
+        button { padding: 8px 15px; margin: 5px; font-size: 14px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 4px; }
+        button:hover { background-color: #0056b3; }
+        
+        #room-info { display: none; background: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        #room-id-text { font-size: 28px; font-weight: bold; color: #d32f2f; letter-spacing: 2px; }
+        #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
+        #board { width: 100%; margin: auto; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>♟️ WebRTC/BaaS 国际象棋</h2>
+    
+    <div class="controls" id="setup-panel">
+        <button onclick="createRoom()">新建房间 (执白)</button>
+        <div style="margin: 10px 0; color: #888;">— 或者 —</div>
+        <input type="text" id="room-input" placeholder="输入4位房间号">
+        <button onclick="joinRoom()">加入房间 (执黑)</button>
+    </div>
+
+    <div id="room-info">
+        <div>当前房间号</div>
+        <div id="room-id-text"></div>
+        <div style="font-size: 12px; color: #666; margin-top: 5px;" id="room-tip">请将此房间号发给你的对手，等待对方加入</div>
+    </div>
+
+    <div id="status"></div>
+    <div id="board"></div>
+</div>
+
+<!-- 脚本全部走 Staticfile 节点 -->
+<script src="https://cdn.staticfile.net/jquery/3.6.0/jquery.min.js"></script>
+<script src="https://cdn.staticfile.net/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+<script src="https://cdn.staticfile.net/chess.js/0.10.3/chess.min.js"></script>
+<script src="https://cdn.goeasy.io/goeasy-2.12.5.min.js"></script>
+
+<script>
+    // 检查核心库是否被公司防火墙拦截
+    window.onload = function() {
+        if (typeof Chess === 'undefined' || typeof Chessboard === 'undefined') {
+            alert("严重错误：核心代码库加载失败！请按 F12 打开控制台检查网络拦截策略。");
+        }
+    };
+
+    var goeasy = GoEasy.getInstance({
+        host: "hangzhou.goeasy.io", 
+        appkey: "BC-58fd21e3fbff443587a9b9f35137cb4e", // 【替换为你的 Appkey】
+        modules: ['pubsub']
+    });
+
+    goeasy.connect({
+        onSuccess: function() { console.log("GoEasy 云服务连接成功！"); },
+        onFailed: function(error) { console.error("GoEasy 连接失败", error); }
+    });
+
+    var board = null;
+    var game = new Chess();
+    var currentRoom = "";
+    var myColor = "white";
+
+    function createRoom() {
+        myColor = "white"; 
+        var roomId = Math.floor(1000 + Math.random() * 9000).toString();
+        showGameUI(roomId);
+        connectRoom(roomId);
+    }
+
+    function joinRoom() {
+        var roomId = document.getElementById('room-input').value.trim();
+        if(!roomId) { alert("请输入房间号！"); return; }
+        myColor = "black"; 
+        document.getElementById('room-tip').innerText = "你已加入房间，可以开始对弈";
+        showGameUI(roomId);
+        connectRoom(roomId);
+    }
+
+    function showGameUI(roomId) {
+        currentRoom = roomId;
+        document.getElementById('setup-panel').style.display = 'none';
+        document.getElementById('room-info').style.display = 'block';
+        document.getElementById('room-id-text').innerText = roomId;
+        document.getElementById('status').style.display = 'block';
+        initGame();
+    }
+
+    function initGame() {
+        var config = {
+            draggable: true,
+            position: 'start',
+            // 棋子图片也同步改为 Staticfile 节点，彻底告别图片碎裂
+            pieceTheme: 'https://npm.elemecdn.com/@chrisoakman/chessboardjs@1.0.0/dist/img/chesspieces/wikipedia/{piece}.png',
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd
+        };
+        
+        board = Chessboard('board', config);
+        
+        if(myColor === 'black') {
+            board.orientation('black');
+        }
+        updateStatus();
+    }
+
+    // 拖动逻辑优化：更为严谨的判断
+    function onDragStart(source, piece, position, orientation) {
+        if (game.game_over()) return false;
+        
+        // 只能拖动自己颜色的棋子
+        if (myColor === 'white' && piece.search(/^b/) !== -1) return false;
+        if (myColor === 'black' && piece.search(/^w/) !== -1) return false;
+
+        // 没轮到自己不能走子
+        var currentTurn = game.turn() === 'w' ? 'white' : 'black';
+        if (currentTurn !== myColor) return false;
+    }
+
+    function onDrop(source, target) {
+        var move = game.move({
+            from: source,
+            to: target,
+            promotion: 'q' 
+        });
+
+        if (move === null) return 'snapback';
+
+        // 增加 Try-Catch 防止发消息失败导致界面卡死
+        try {
+            goeasy.pubsub.publish({
+                channel: currentRoom,
+                message: JSON.stringify({ type: 'move', fen: game.fen() })
+            });
+        } catch (e) {
+            console.error("消息同步失败", e);
+        }
+        
+        updateStatus();
+    }
+
+    function onSnapEnd() {
+        board.position(game.fen());
+    }
+
+    function updateStatus() {
+        var statusText = '';
+        var moveColor = game.turn() === 'w' ? '白方' : '黑方';
+
+        if (game.in_checkmate()) {
+            statusText = `游戏结束, ${moveColor} 被将死!`;
+        } else if (game.in_draw()) {
+            statusText = '游戏结束, 平局!';
+        } else {
+            statusText = `当前回合: ${moveColor} | 你执: ${myColor === 'white' ? '白棋' : '黑棋'}`;
+            if (game.in_check()) statusText += ' (将军!)';
+        }
+        document.getElementById('status').innerText = statusText;
+    }
+
+    function connectRoom(roomId) {
+        goeasy.pubsub.subscribe({
+            channel: roomId,
+            onMessage: function(msg) {
+                var data = JSON.parse(msg.content);
+                if(data.type === 'move') {
+                    game.load(data.fen);      
+                    board.position(data.fen); 
+                    updateStatus();
+                }
+            }
+        });
+    }
+</script>
+</body>
+</html>
