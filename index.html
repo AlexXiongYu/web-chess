@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>纯前端国际象棋 (社交互动版)</title>
+    <title>纯前端国际象棋 (完美联机版)</title>
     <style>
         body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
         .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
@@ -138,7 +138,7 @@
     }
 
     // ==========================================
-    // 2. 核心网络封装 (解决回音 Bug 的关键)
+    // 2. 核心网络封装 
     // ==========================================
     var goeasy = null;
     var isNetworkReady = false;
@@ -159,15 +159,11 @@
         });
     }
 
-    // ★ 统一发送接口，自带 sender 身份标签 ★
     function broadcast(payload) {
         if (!isNetworkReady || currentRoom === "") return;
-        payload.sender = myColor; // 核心：盖上自己的戳
+        payload.sender = myColor; 
         try {
-            goeasy.pubsub.publish({
-                channel: currentRoom,
-                message: JSON.stringify(payload)
-            });
+            goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify(payload) });
         } catch(e) {}
     }
 
@@ -252,7 +248,6 @@
             onMessage: function(msg) {
                 var data = JSON.parse(msg.content);
                 
-                // ★ 终极拦截：如果是自己发出的消息，直接丢弃，绝不允许执行两次！ ★
                 if(data.sender === myColor) return;
                 
                 // --- 棋盘同步 ---
@@ -282,7 +277,7 @@
                 }
                 if(data.type === 'agree_undo') {
                     alert("对手同意悔棋！");
-                    executeUndo(); // 发起方收到同意后，自己执行退步并广播棋盘给对方
+                    executeUndo(); // 发起方收到同意后执行
                 }
                 if(data.type === 'reject_undo') {
                     alert("对手无情地拒绝了你的悔棋请求。");
@@ -326,6 +321,12 @@
         if (game.history().length === 0) return alert("已经是开局状态了，无棋可悔。");
 
         if (isNetworkReady && currentRoom !== "") {
+            var currentTurn = game.turn() === 'w' ? 'white' : 'black';
+            // 如果是我的回合想悔棋，需要连退2步。所以如果一共才走了1步，是没法退的。
+            if (currentTurn === myColor && game.history().length < 2) {
+                return alert("你还没有走棋，无法悔棋。");
+            }
+
             if (confirm("发送悔棋请求给对手？")) {
                 document.getElementById('status').innerText = "已发送悔棋请求，等待对方同意...";
                 broadcast({ type: 'request_undo' });
@@ -336,7 +337,22 @@
     }
 
     function executeUndo() {
-        game.undo(); // 回退一步（半回合）
+        var steps = 1;
+        
+        // 智能判断退步数量
+        if (isNetworkReady && currentRoom !== "") {
+            var currentTurn = game.turn() === 'w' ? 'white' : 'black';
+            // 如果当前是我的回合（我被将死，或者对方刚走完我觉得我上一步走错了）
+            // 必须连退2步，撤回对方的反击和我的错棋，才能真正回到“让我重新走”的状态
+            if (currentTurn === myColor) {
+                steps = 2; 
+            }
+        }
+
+        for(var i = 0; i < steps; i++) {
+            game.undo(); 
+        }
+        
         selectedSquare = null;
         updateBoardState();
         broadcast({ type: 'sync', fen: game.fen() }); // 强制对齐双端画面
@@ -357,12 +373,13 @@
         game.reset();
         selectedSquare = null;
         updateBoardState();
+        broadcast({ type: 'sync', fen: game.fen() }); // 强制重开对齐
     }
 
     function sendEmoji(emojiStr) {
         initAudio();
-        showFloatingEmoji(emojiStr, true); // 自己在右边先飘起来
-        broadcast({ type: 'emoji', value: emojiStr }); // 发给对手
+        showFloatingEmoji(emojiStr, true); 
+        broadcast({ type: 'emoji', value: emojiStr }); 
     }
 
     function showFloatingEmoji(emojiStr, isMe) {
@@ -370,7 +387,6 @@
         el.innerText = emojiStr;
         el.className = 'floating-emoji';
         
-        // 自己的在右，对方的在左
         el.style.left = isMe ? '75%' : '15%';
         var randomOffset = Math.floor(Math.random() * 20) - 10;
         el.style.marginLeft = randomOffset + 'px';
