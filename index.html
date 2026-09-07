@@ -20,19 +20,16 @@
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
         
-        /* 游戏中操作面板 */
         #game-controls { display: none; margin-bottom: 15px; }
         .btn-warning { background-color: #ff9800 !important; }
         .btn-warning:hover { background-color: #e68a00 !important; }
         .btn-danger { background-color: #dc3545 !important; }
         .btn-danger:hover { background-color: #c82333 !important; }
 
-        /* Emoji 表情栏 */
         #emoji-bar { display: none; justify-content: center; gap: 15px; margin-bottom: 15px; background: #f8f9fa; padding: 10px; border-radius: 30px; }
         .emoji-btn { font-size: 24px; cursor: pointer; transition: transform 0.2s; }
         .emoji-btn:hover { transform: scale(1.3); }
 
-        /* 悬浮动画特效 */
         .floating-emoji {
             position: fixed; bottom: 20%; font-size: 60px; pointer-events: none; z-index: 1000;
             animation: floatUp 2s ease-out forwards;
@@ -78,7 +75,6 @@
 
     <div id="status">正在初始化游戏...</div>
     
-    <!-- Emoji 快捷发送栏 -->
     <div id="emoji-bar">
         <div class="emoji-btn" onclick="sendEmoji('👋')">👋</div>
         <div class="emoji-btn" onclick="sendEmoji('😂')">😂</div>
@@ -142,7 +138,7 @@
     }
 
     // ==========================================
-    // 2. 网络与房间管理
+    // 2. 核心网络封装 (解决回音 Bug 的关键)
     // ==========================================
     var goeasy = null;
     var isNetworkReady = false;
@@ -163,6 +159,21 @@
         });
     }
 
+    // ★ 统一发送接口，自带 sender 身份标签 ★
+    function broadcast(payload) {
+        if (!isNetworkReady || currentRoom === "") return;
+        payload.sender = myColor; // 核心：盖上自己的戳
+        try {
+            goeasy.pubsub.publish({
+                channel: currentRoom,
+                message: JSON.stringify(payload)
+            });
+        } catch(e) {}
+    }
+
+    // ==========================================
+    // 3. 房间管理与持久化
+    // ==========================================
     function checkSavedGame() {
         var saved = localStorage.getItem('chessSave');
         if (saved) document.getElementById('resume-btn').style.display = 'inline-block';
@@ -225,14 +236,14 @@
         
         document.getElementById('status').style.display = 'block';
         document.getElementById('game-controls').style.display = 'block';
-        document.getElementById('emoji-bar').style.display = 'flex'; // 显示表情栏
+        document.getElementById('emoji-bar').style.display = 'flex';
         document.getElementById('board').style.display = 'grid';
         drawBoardDOM();
         updateBoardState();
     }
 
     // ==========================================
-    // 3. 消息通讯中枢 (集成所有社交请求)
+    // 4. 消息通讯中枢 
     // ==========================================
     function connectRoom(roomId) {
         if(!goeasy) return;
@@ -241,7 +252,10 @@
             onMessage: function(msg) {
                 var data = JSON.parse(msg.content);
                 
-                // --- 棋盘同步逻辑 ---
+                // ★ 终极拦截：如果是自己发出的消息，直接丢弃，绝不允许执行两次！ ★
+                if(data.sender === myColor) return;
+                
+                // --- 棋盘同步 ---
                 if(data.type === 'move' || data.type === 'sync') {
                     if(game.fen() !== data.fen) {
                         game.load(data.fen);      
@@ -254,34 +268,34 @@
                 
                 if(data.type === 'request_sync') {
                     if (game.history().length > 0) {
-                        goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'sync', fen: game.fen() }) });
+                        broadcast({ type: 'sync', fen: game.fen() });
                     }
                 }
 
-                // --- 悔棋握手逻辑 ---
+                // --- 悔棋握手 ---
                 if(data.type === 'request_undo') {
                     if (confirm("对手请求退一步棋 (悔棋)，是否同意？")) {
-                        goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'agree_undo' }) });
+                        broadcast({ type: 'agree_undo' });
                     } else {
-                        goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'reject_undo' }) });
+                        broadcast({ type: 'reject_undo' });
                     }
                 }
                 if(data.type === 'agree_undo') {
                     alert("对手同意悔棋！");
-                    executeUndo(); // 发起方收到同意后，执行后撤并同步给对方
+                    executeUndo(); // 发起方收到同意后，自己执行退步并广播棋盘给对方
                 }
                 if(data.type === 'reject_undo') {
                     alert("对手无情地拒绝了你的悔棋请求。");
                     updateStatusText();
                 }
 
-                // --- 重开握手逻辑 ---
+                // --- 重开握手 ---
                 if(data.type === 'request_restart') {
                     if (confirm("对手请求重开一局，是否同意？")) {
-                        goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'agree_restart' }) });
+                        broadcast({ type: 'agree_restart' });
                         executeRestart();
                     } else {
-                        goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'reject_restart' }) });
+                        broadcast({ type: 'reject_restart' });
                     }
                 }
                 if(data.type === 'agree_restart') {
@@ -295,56 +309,44 @@
 
                 // --- 接收 Emoji ---
                 if(data.type === 'emoji') {
-                    // 如果收到的是对方发的表情，显示在左侧
                     showFloatingEmoji(data.value, false);
                 }
             },
             onSuccess: function() {
-                goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'request_sync' }) });
+                broadcast({ type: 'request_sync' });
             }
         });
     }
 
     // ==========================================
-    // 4. 对局控制与表情互动
+    // 5. 对局控制与表情互动
     // ==========================================
 
-    // 发起悔棋请求
     function requestUndo() {
         if (game.history().length === 0) return alert("已经是开局状态了，无棋可悔。");
 
         if (isNetworkReady && currentRoom !== "") {
             if (confirm("发送悔棋请求给对手？")) {
                 document.getElementById('status').innerText = "已发送悔棋请求，等待对方同意...";
-                try {
-                    goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'request_undo' }) });
-                } catch(e){}
+                broadcast({ type: 'request_undo' });
             }
         } else {
-            // 单机模式直接执行悔棋
-            executeUndo();
+            executeUndo(); // 单机直接执行
         }
     }
 
-    // 真正执行悔棋(后撤1步)
     function executeUndo() {
-        game.undo(); 
+        game.undo(); // 回退一步（半回合）
         selectedSquare = null;
         updateBoardState();
-        
-        // 强制同步棋盘给对方
-        if (isNetworkReady && currentRoom !== "") {
-            try { goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'sync', fen: game.fen() }) }); } 
-            catch(e){}
-        }
+        broadcast({ type: 'sync', fen: game.fen() }); // 强制对齐双端画面
     }
 
-    // 发起重开请求
     function requestRestart() {
         if (isNetworkReady && currentRoom !== "") {
             if (confirm("发送重开请求给对手？")) {
                 document.getElementById('status').innerText = "已发送重开请求，等待对手同意...";
-                try { goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'request_restart' }) }); } catch(e){}
+                broadcast({ type: 'request_restart' });
             }
         } else {
             if (confirm("确定要重新开始一局吗？")) executeRestart();
@@ -357,18 +359,10 @@
         updateBoardState();
     }
 
-    // --- Emoji 核心逻辑 ---
     function sendEmoji(emojiStr) {
         initAudio();
-        // 1. 本地展示自己发的表情 (在屏幕右侧飘起)
-        showFloatingEmoji(emojiStr, true);
-        
-        // 2. 发送给对手
-        if (isNetworkReady && currentRoom !== "") {
-            try { 
-                goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'emoji', value: emojiStr }) }); 
-            } catch(e){}
-        }
+        showFloatingEmoji(emojiStr, true); // 自己在右边先飘起来
+        broadcast({ type: 'emoji', value: emojiStr }); // 发给对手
     }
 
     function showFloatingEmoji(emojiStr, isMe) {
@@ -376,26 +370,19 @@
         el.innerText = emojiStr;
         el.className = 'floating-emoji';
         
-        // 自己的表情在右边，对手的表情在左边
+        // 自己的在右，对方的在左
         el.style.left = isMe ? '75%' : '15%';
-        
-        // 添加一点随机的水平偏移，避免连续发表情重叠在一起
         var randomOffset = Math.floor(Math.random() * 20) - 10;
         el.style.marginLeft = randomOffset + 'px';
 
         document.body.appendChild(el);
-        
-        // 播放轻快的提示音
         playTone(isMe ? 800 : 500, 'sine', 0.1, 0.1);
 
-        // 动画结束后自动销毁 DOM 元素
-        setTimeout(function() {
-            el.remove();
-        }, 2000);
+        setTimeout(function() { el.remove(); }, 2000);
     }
 
     // ==========================================
-    // 5. 界面渲染与交互 (保持不变)
+    // 6. 界面渲染与交互 
     // ==========================================
     function drawBoardDOM() {
         var boardDiv = document.getElementById('board');
@@ -494,9 +481,8 @@
         playAudioFeedback(move);
         updateStatusText();
 
-        if (shouldBroadcast && isNetworkReady && currentRoom !== "") {
-            try { goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify({ type: 'move', fen: game.fen(), moveInfo: move }) }); } 
-            catch(err){}
+        if (shouldBroadcast) {
+            broadcast({ type: 'move', fen: game.fen(), moveInfo: move });
         }
     }
 
