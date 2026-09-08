@@ -11,6 +11,7 @@
         input { padding: 8px 12px; margin: 5px; font-size: 14px; width: 130px; border: 1px solid #ccc; border-radius: 4px;}
         button { padding: 8px 15px; margin: 5px; font-size: 14px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 4px; }
         button:hover { background-color: #0056b3; }
+        select { padding: 6px; font-size: 14px; border-radius: 4px; border: 1px solid #ccc; }
         
         #resume-btn { background-color: #28a745; display: none; width: 80%; margin: 10px auto; font-weight: bold; }
         #resume-btn:hover { background-color: #218838; }
@@ -20,13 +21,15 @@
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
         
-        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; }
+        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; flex-wrap: wrap; }
         .btn-warning { background-color: #ff9800 !important; }
         .btn-warning:hover { background-color: #e68a00 !important; }
         .btn-danger { background-color: #dc3545 !important; }
         .btn-danger:hover { background-color: #c82333 !important; }
         .btn-info { background-color: #17a2b8 !important; }
         .btn-info:hover { background-color: #138496 !important; }
+        .btn-secondary { background-color: #6c757d !important; }
+        .btn-secondary:hover { background-color: #5a6268 !important; }
 
         /* Emoji 面板样式 */
         #emoji-container { position: relative; display: inline-block; }
@@ -49,8 +52,24 @@
             100% { opacity: 0; transform: translateY(-200px) scale(1); }
         }
 
+        /* 棋盘容器与浮层 */
+        #board-container { position: relative; width: 100%; max-width: 450px; margin: 0 auto; display: none; }
+        #endgame-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 50;
+            background: rgba(255, 255, 255, 0.85); display: none; flex-direction: column;
+            justify-content: center; align-items: center; border-radius: 2px;
+            font-size: 28px; font-weight: bold; color: #d32f2f; text-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+        }
+        #promotion-modal {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 60;
+            background: white; padding: 15px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            display: none; flex-direction: column; gap: 10px; width: 80%;
+        }
+        .promo-btn { font-size: 20px; padding: 10px; cursor: pointer; background: #f0f0f0; border: 1px solid #ccc; border-radius: 5px; }
+        .promo-btn:hover { background: #e0e0e0; }
+
         /* 棋盘样式 */
-        #board { display: none; grid-template-columns: repeat(8, 1fr); width: 100%; max-width: 450px; margin: 0 auto; border: 4px solid #444; border-radius: 2px; }
+        #board { display: grid; grid-template-columns: repeat(8, 1fr); width: 100%; height: 100%; border: 4px solid #444; border-radius: 2px; }
         .square { aspect-ratio: 1; display: flex; justify-content: center; align-items: center; cursor: pointer; position: relative; }
         .white-sq { background-color: #f0d9b5; }
         .black-sq { background-color: #b58863; }
@@ -60,8 +79,8 @@
         .highlight-hint::after { content: ''; width: 26%; height: 26%; background-color: rgba(0,0,0,0.25); border-radius: 50%; position: absolute; pointer-events: none; }
         .in-check { box-shadow: inset 0 0 25px red !important; background-color: #ffcdd2 !important; }
         
-        /* 新增：上一步轨迹高亮 (半透明黄色遮罩) */
-        .last-move { background-color: rgba(255, 255, 0, 0.4) !important; }
+        /* 使用内阴影实现半透明叠加，避免覆盖原有黑白格颜色 */
+        .last-move { box-shadow: inset 0 0 0 100px rgba(255, 255, 0, 0.35) !important; }
         
         .piece-img { width: 90%; height: 90%; pointer-events: none; user-select: none; }
     </style>
@@ -74,6 +93,15 @@
     <div id="network-warning">⚠️ 检测到通信被拦截。当前仅支持同屏单机对战。</div>
 
     <div class="controls" id="setup-panel">
+        <div style="margin-bottom: 15px;">
+            <strong>请选择身份：</strong>
+            <select id="role-select">
+                <option value="👨🏻 米爸">👨🏻 米爸</option>
+                <option value="👩🏻 米妈">👩🏻 米妈</option>
+                <option value="👧🏻 小米米">👧🏻 小米米</option>
+            </select>
+        </div>
+
         <button id="resume-btn" onclick="resumeGame()">🔄 恢复刚才断线的对局</button>
         <button onclick="createRoom()">新建房间 (执白)</button>
         <div style="margin: 10px 0; color: #888; font-size: 14px;">— 或者 —</div>
@@ -84,12 +112,13 @@
     <div id="room-info">
         <div style="font-size: 14px;">当前房间号</div>
         <div id="room-id-text"></div>
-        <div style="font-size: 12px; color: #666;" id="room-tip">请将号码发给对手，等待对方加入</div>
+        <div style="font-size: 12px; color: #666;" id="room-tip">请将号码发给对方，等待加入</div>
     </div>
 
     <div id="status">正在初始化游戏...</div>
     
     <div id="game-controls">
+        <button class="btn-secondary" id="hint-btn" onclick="toggleHints()">👁️ 路径提示: 开</button>
         <div id="emoji-container">
             <button class="btn-info" onclick="toggleEmojiPanel()">😀 发表情</button>
             <div id="emoji-panel">
@@ -110,11 +139,22 @@
                 <div class="emoji-btn" onclick="sendEmoji('👀')">👀</div>
             </div>
         </div>
-        <button class="btn-warning" onclick="requestUndo()">🔙 悔棋</button>
+        <button class="btn-warning" id="undo-btn" onclick="requestUndo()">🔙 悔棋</button>
         <button class="btn-danger" id="restart-btn" onclick="requestRestart()">🔄 重开</button>
     </div>
 
-    <div id="board"></div>
+    <div id="board-container">
+        <div id="board"></div>
+        <div id="endgame-overlay"></div>
+        <div id="promotion-modal">
+            <div style="font-weight: bold; margin-bottom: 5px;">小兵升变！请选择：</div>
+            <button class="promo-btn" onclick="confirmPromotion('q')">♕ 后 (Queen)</button>
+            <button class="promo-btn" onclick="confirmPromotion('r')">♖ 车 (Rook)</button>
+            <button class="promo-btn" onclick="confirmPromotion('n')">♘ 马 (Knight)</button>
+            <button class="promo-btn" onclick="confirmPromotion('b')">♗ 象 (Bishop)</button>
+            <button class="promo-btn" style="background: #ffcdd2;" onclick="cancelPromotion()">❌ 取消</button>
+        </div>
+    </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chess.js@0.10.3/chess.min.js"></script>
@@ -162,8 +202,13 @@
         }
     }
 
+    function playErrorSound() {
+        playTone(150, 'sawtooth', 0.1, 0.4);
+        setTimeout(() => playTone(100, 'sawtooth', 0.15, 0.4), 100);
+    }
+
     // ==========================================
-    // 2. 核心网络封装 
+    // 2. 核心网络封装与全局变量
     // ==========================================
     var goeasy = null;
     var isNetworkReady = false;
@@ -171,11 +216,18 @@
     var currentRoom = "";
     var myColor = "white";
     var selectedSquare = null;
+    
+    // 新增设置变量
+    var showHints = true;
+    var isUndoPending = false; 
+    var pendingPromotionMove = null;
+    var myIdentity = "👨🏻 米爸";
+    var oppIdentity = "对方";
 
     if (typeof GoEasy !== 'undefined') {
         goeasy = GoEasy.getInstance({
             host: "hangzhou.goeasy.io", 
-            appkey: "BC-58fd21e3fbff443587a9b9f35137cb4e", // 【替换为你的 Appkey】
+            appkey: "BC-58fd21e3fbff443587a9b9f35137cb4e",
             modules: ['pubsub']
         });
         goeasy.connect({
@@ -184,7 +236,6 @@
         });
     }
 
-    // 通用广播函数，同时发送 fen 和保存历史的 pgn
     function broadcast(payload) {
         if (!isNetworkReady || currentRoom === "") return;
         payload.sender = myColor; 
@@ -193,7 +244,7 @@
     }
 
     // ==========================================
-    // 3. 房间管理与持久化 (改用 PGN 记录历史)
+    // 3. 房间管理与持久化 
     // ==========================================
     function checkSavedGame() {
         var saved = localStorage.getItem('chessSave');
@@ -201,7 +252,7 @@
     }
 
     function saveGameToLocal() {
-        var data = { roomId: currentRoom, color: myColor, fen: game.fen(), pgn: game.pgn() };
+        var data = { roomId: currentRoom, color: myColor, fen: game.fen(), pgn: game.pgn(), identity: myIdentity, oppIdentity: oppIdentity };
         localStorage.setItem('chessSave', JSON.stringify(data));
     }
 
@@ -209,6 +260,7 @@
         initAudio(); 
         if (!isNetworkReady) return alert("当前离线，仅支持同机双人对战。");
         myColor = "white"; 
+        myIdentity = document.getElementById('role-select').value;
         var roomId = Math.floor(1000 + Math.random() * 9000).toString();
         
         localStorage.removeItem('chessSave'); 
@@ -226,6 +278,7 @@
         if(!roomId) return alert("请输入房间号！");
         
         myColor = "black"; 
+        myIdentity = document.getElementById('role-select').value;
         document.getElementById('room-tip').innerText = "你已加入房间，开始对弈";
         
         game.reset();
@@ -242,8 +295,9 @@
         
         currentRoom = savedData.roomId;
         myColor = savedData.color;
+        if(savedData.identity) myIdentity = savedData.identity;
+        if(savedData.oppIdentity) oppIdentity = savedData.oppIdentity;
         
-        // 优先加载含历史记录的 PGN
         if (savedData.pgn) {
             game.load_pgn(savedData.pgn);
         } else {
@@ -263,7 +317,7 @@
         
         document.getElementById('status').style.display = 'block';
         document.getElementById('game-controls').style.display = 'flex';
-        document.getElementById('board').style.display = 'grid';
+        document.getElementById('board-container').style.display = 'block';
         drawBoardDOM();
         updateBoardState();
     }
@@ -277,10 +331,11 @@
             channel: roomId,
             onMessage: function(msg) {
                 var data = JSON.parse(msg.content);
-                if(data.sender === myColor) return; // 拦截自己发出的重复消息
+                if(data.sender === myColor) return; 
                 
-                // --- 棋盘同步 (优先应用 PGN 保证历史记录不丢) ---
+                // 棋盘同步与身份拉取
                 if(data.type === 'move' || data.type === 'sync') {
+                    if (data.identity) oppIdentity = data.identity;
                     if(game.fen() !== data.fen) {
                         if (data.pgn) game.load_pgn(data.pgn);
                         else game.load(data.fen);      
@@ -289,35 +344,40 @@
                         updateBoardState();
                         if(data.type === 'move') handleMoveAftermath(data.moveInfo, false);
                         else updateStatusText(); 
+                    } else {
+                        updateStatusText(); // 即使棋盘没变，身份更新了也要刷新文字
                     }
                 }
                 
                 if(data.type === 'request_sync') {
-                    if (game.history().length > 0) {
-                        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn() });
-                    }
+                    if (data.identity) oppIdentity = data.identity;
+                    updateStatusText();
+                    broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
                 }
 
-                // --- 悔棋握手 ---
+                // 悔棋握手
                 if(data.type === 'request_undo') {
-                    if (confirm("对手请求退一步棋 (悔棋)，是否同意？")) {
+                    if (confirm(`对手 (${oppIdentity}) 请求退一步棋 (悔棋)，是否同意？`)) {
                         broadcast({ type: 'agree_undo' });
                     } else {
                         broadcast({ type: 'reject_undo' });
                     }
                 }
                 if(data.type === 'agree_undo') {
-                    // 对方同意后，静默执行退步并直接更新界面
+                    isUndoPending = false;
+                    document.getElementById('undo-btn').innerText = "🔙 悔棋";
                     executeUndo(); 
                 }
                 if(data.type === 'reject_undo') {
+                    isUndoPending = false;
+                    document.getElementById('undo-btn').innerText = "🔙 悔棋";
                     alert("对手无情地拒绝了你的悔棋请求。");
                     updateStatusText();
                 }
 
-                // --- 重开握手 ---
+                // 重开握手
                 if(data.type === 'request_restart') {
-                    if (confirm("对手请求重开一局，是否同意？")) {
+                    if (confirm(`对手 (${oppIdentity}) 请求重开一局，是否同意？`)) {
                         broadcast({ type: 'agree_restart' });
                         executeRestart();
                     } else {
@@ -325,7 +385,6 @@
                     }
                 }
                 if(data.type === 'agree_restart') {
-                    // 不再弹窗，直接刷新重开
                     executeRestart();
                 }
                 if(data.type === 'reject_restart') {
@@ -333,61 +392,68 @@
                     updateStatusText();
                 }
 
-                // --- 接收 Emoji ---
+                // Emoji
                 if(data.type === 'emoji') {
                     showFloatingEmoji(data.value, false);
                 }
             },
             onSuccess: function() {
-                broadcast({ type: 'request_sync' });
+                broadcast({ type: 'request_sync', identity: myIdentity });
             }
         });
     }
 
     // ==========================================
-    // 5. 对局控制与表情互动
+    // 5. 对局控制与特殊逻辑
     // ==========================================
+    function toggleHints() {
+        showHints = !showHints;
+        document.getElementById('hint-btn').innerText = showHints ? "👁️ 路径提示: 开" : "👁️ 路径提示: 关";
+        updateBoardState();
+    }
 
     function requestUndo() {
         var historyLen = game.history().length;
         if (historyLen === 0) return alert("已经是开局状态了，无棋可悔。");
+        if (isUndoPending) return alert("已发送悔棋请求，请等待对方响应后再试。");
 
         if (isNetworkReady && currentRoom !== "") {
-            // 智能步数检测拦截：如果我还没走过棋，不允许发起悔棋
             var currentTurn = game.turn() === 'w' ? 'white' : 'black';
             if (currentTurn === myColor && historyLen < 2) {
                 return alert("你还没有走棋，无法悔棋。");
             }
 
             if (confirm("发送悔棋请求给对手？")) {
+                isUndoPending = true;
+                document.getElementById('undo-btn').innerText = "⏳ 等待同意";
                 document.getElementById('status').innerText = "已发送悔棋请求，等待对方同意...";
                 broadcast({ type: 'request_undo' });
             }
         } else {
-            executeUndo(); // 单机直接执行
+            executeUndo(); 
         }
     }
 
     function executeUndo() {
         var steps = 1;
-        // 智能判断回撤步数
         if (isNetworkReady && currentRoom !== "") {
             var currentTurn = game.turn() === 'w' ? 'white' : 'black';
-            // 如果轮到我走（说明我想推翻我上一步的错棋，并撤销对方的回应）
             if (currentTurn === myColor) steps = 2; 
         }
 
         var historyLen = game.history().length;
-        if (historyLen < steps) steps = historyLen; // 防止溢出
+        if (historyLen < steps) steps = historyLen; 
 
         for(var i = 0; i < steps; i++) {
             game.undo(); 
         }
         
+        isUndoPending = false;
+        document.getElementById('undo-btn').innerText = "🔙 悔棋";
         selectedSquare = null;
         updateBoardState();
         document.getElementById('status').innerText = "已成功悔棋。";
-        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn() }); 
+        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity }); 
     }
 
     function requestRestart() {
@@ -402,10 +468,12 @@
     }
 
     function executeRestart() {
+        isUndoPending = false;
+        document.getElementById('undo-btn').innerText = "🔙 悔棋";
         game.reset();
         selectedSquare = null;
         updateBoardState();
-        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn() }); 
+        broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity }); 
     }
 
     function toggleEmojiPanel() {
@@ -415,7 +483,7 @@
 
     function sendEmoji(emojiStr) {
         initAudio();
-        document.getElementById('emoji-panel').style.display = 'none'; // 发送后自动关闭面板
+        document.getElementById('emoji-panel').style.display = 'none'; 
         showFloatingEmoji(emojiStr, true); 
         broadcast({ type: 'emoji', value: emojiStr }); 
     }
@@ -424,19 +492,16 @@
         var el = document.createElement('div');
         el.innerText = emojiStr;
         el.className = 'floating-emoji';
-        
         el.style.left = isMe ? '75%' : '15%';
         var randomOffset = Math.floor(Math.random() * 30) - 15;
         el.style.marginLeft = randomOffset + 'px';
-
         document.body.appendChild(el);
         playTone(isMe ? 800 : 500, 'sine', 0.1, 0.1);
-
         setTimeout(function() { el.remove(); }, 2500);
     }
 
     // ==========================================
-    // 6. 界面渲染与交互 
+    // 6. 界面渲染与棋盘交互 
     // ==========================================
     function drawBoardDOM() {
         var boardDiv = document.getElementById('board');
@@ -457,13 +522,12 @@
     }
 
     function updateBoardState() {
-        // 1. 清理全部特效和棋子
         document.querySelectorAll('.square').forEach(function(sq) {
             sq.innerHTML = '';
             sq.classList.remove('highlight-select', 'highlight-hint', 'in-check', 'last-move');
         });
 
-        // 2. 渲染上一步的轨迹高亮
+        // 轨迹半透明叠加阴影
         var history = game.history({ verbose: true });
         if (history.length > 0) {
             var lastMove = history[history.length - 1];
@@ -473,13 +537,11 @@
             if (toSq) toSq.classList.add('last-move');
         }
 
-        // 3. 渲染当前棋子
         var files = ['a','b','c','d','e','f','g','h'];
         for (var r = 1; r <= 8; r++) {
             for (var c = 0; c < 8; c++) {
                 var sqId = files[c] + r;
                 var pieceInfo = game.get(sqId); 
-                
                 if (pieceInfo) {
                     var pieceName = pieceInfo.color + pieceInfo.type.toUpperCase();
                     var img = document.createElement('img');
@@ -491,15 +553,17 @@
             }
         }
         
-        // 4. 渲染当前选中与提示路线
         if (selectedSquare) {
             var selectedSqEl = document.getElementById(selectedSquare);
             if (selectedSqEl) selectedSqEl.classList.add('highlight-select');
             
-            var moves = game.moves({ square: selectedSquare, verbose: true });
-            for (var i = 0; i < moves.length; i++) {
-                var hintSquare = document.getElementById(moves[i].to);
-                if(hintSquare) hintSquare.classList.add('highlight-hint');
+            // 受开关控制的路线提示
+            if (showHints) {
+                var moves = game.moves({ square: selectedSquare, verbose: true });
+                for (var i = 0; i < moves.length; i++) {
+                    var hintSquare = document.getElementById(moves[i].to);
+                    if(hintSquare) hintSquare.classList.add('highlight-hint');
+                }
             }
         }
 
@@ -509,7 +573,7 @@
     }
 
     function handleSquareClick(e) {
-        if (game.game_over()) return;
+        if (game.game_over() || pendingPromotionMove) return;
         
         if (isNetworkReady && currentRoom !== "") {
             var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
@@ -519,6 +583,17 @@
         var sqId = e.currentTarget.id;
         
         if (selectedSquare) {
+            // 升变规则检测
+            var possibleMoves = game.moves({ verbose: true });
+            var isPromo = possibleMoves.some(m => m.from === selectedSquare && m.to === sqId && m.flags.includes('p'));
+            
+            if (isPromo) {
+                pendingPromotionMove = { from: selectedSquare, to: sqId };
+                document.getElementById('promotion-modal').style.display = 'flex';
+                return; 
+            }
+
+            // 常规移动
             var move = game.move({ from: selectedSquare, to: sqId, promotion: 'q' });
             if (move) {
                 selectedSquare = null;
@@ -530,6 +605,8 @@
                     selectedSquare = sqId;
                     updateBoardState();
                 } else {
+                    // 非法落点，发出警告声
+                    playErrorSound();
                     selectedSquare = null;
                     updateBoardState();
                 }
@@ -543,17 +620,52 @@
         }
     }
 
+    function confirmPromotion(pieceType) {
+        document.getElementById('promotion-modal').style.display = 'none';
+        if (!pendingPromotionMove) return;
+        
+        var move = game.move({ from: pendingPromotionMove.from, to: pendingPromotionMove.to, promotion: pieceType });
+        pendingPromotionMove = null;
+        
+        if (move) {
+            selectedSquare = null;
+            updateBoardState();
+            handleMoveAftermath(move, true);
+        }
+    }
+
+    function cancelPromotion() {
+        document.getElementById('promotion-modal').style.display = 'none';
+        pendingPromotionMove = null;
+        selectedSquare = null;
+        updateBoardState();
+    }
+
     function handleMoveAftermath(move, shouldBroadcast) {
         updateCheckVisuals();
         playAudioFeedback(move);
         updateStatusText();
-
-        if (shouldBroadcast) {
-            broadcast({ type: 'move', fen: game.fen(), pgn: game.pgn(), moveInfo: move });
-        }
+        if (shouldBroadcast) broadcast({ type: 'move', fen: game.fen(), pgn: game.pgn(), moveInfo: move, identity: myIdentity });
     }
 
     function updateCheckVisuals() {
+        var overlay = document.getElementById('endgame-overlay');
+        
+        if (game.game_over()) {
+            if (game.in_checkmate()) {
+                var turnColor = game.turn() === 'w' ? 'white' : 'black';
+                // 如果当前轮到的颜色和我一致，说明我被将死了，对方赢了
+                var winnerName = (turnColor === myColor) ? oppIdentity : myIdentity;
+                overlay.innerHTML = `🎉 将杀！<br><span style="font-size:36px; margin-top:10px;">${winnerName} 获胜！</span>`;
+            } else {
+                overlay.innerHTML = `🤝 游戏平局`;
+            }
+            overlay.style.display = 'flex';
+        } else {
+            overlay.style.display = 'none';
+        }
+
+        // 将军红光保留
         if (game.in_check() || game.in_checkmate()) {
             var turn = game.turn();
             var files = ['a','b','c','d','e','f','g','h'];
@@ -573,28 +685,18 @@
 
     function updateStatusText() {
         var statusEl = document.getElementById('status');
-        var turnColor = game.turn() === 'w' ? '白方' : '黑方';
-        
         if (game.game_over()) {
-            if (game.in_checkmate()) {
-                statusEl.innerText = '游戏结束，' + turnColor + ' 被将死！';
-            } else if (game.in_draw()) {
-                statusEl.innerText = '游戏结束，平局！';
-            }
+            statusEl.innerText = '游戏结束，请查看棋盘结果';
         } else {
-            if (isNetworkReady && currentRoom !== "") {
-                var txt = `你是: ${myColor === 'white' ? '白棋' : '黑棋'} | 当前轮到: ${turnColor}`;
-                if (game.in_check()) txt += ' (⚠️ 将军！)';
-                statusEl.innerText = txt;
-            } else {
-                var txt = `本地单机模式 | 当前轮到: ${turnColor}`;
-                if (game.in_check()) txt += ' (⚠️ 将军！)';
-                statusEl.innerText = txt;
-            }
+            var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
+            var turnText = (currentTurnColor === myColor) ? "自己走" : `对方 (${oppIdentity}) 走`;
+            
+            var txt = `你是: ${myIdentity} | 当前: ${turnText}`;
+            if (game.in_check()) txt += ' (⚠️ 将军！)';
+            statusEl.innerText = txt;
         }
     }
 
-    // 点击页面其他地方自动关闭表情面板
     document.addEventListener('click', function(event) {
         var panel = document.getElementById('emoji-panel');
         var btn = document.querySelector('.btn-info');
