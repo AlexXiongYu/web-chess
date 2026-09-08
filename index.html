@@ -21,15 +21,22 @@
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
         
-        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; flex-wrap: wrap; align-items: center;}
         .btn-warning { background-color: #ff9800 !important; }
         .btn-warning:hover { background-color: #e68a00 !important; }
         .btn-danger { background-color: #dc3545 !important; }
         .btn-danger:hover { background-color: #c82333 !important; }
         .btn-info { background-color: #17a2b8 !important; }
         .btn-info:hover { background-color: #138496 !important; }
-        .btn-secondary { background-color: #6c757d !important; }
-        .btn-secondary:hover { background-color: #5a6268 !important; }
+
+        /* --- 新增：精致滑块开关样式 --- */
+        .switch-container { display: flex; align-items: center; justify-content: center; gap: 8px; background: #f8f9fa; padding: 6px 12px; border-radius: 20px; border: 1px solid #ddd; }
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; margin: 0; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 24px; }
+        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        input:checked + .slider { background-color: #28a745; }
+        input:checked + .slider:before { transform: translateX(20px); }
 
         /* Emoji 面板样式 */
         #emoji-container { position: relative; display: inline-block; }
@@ -76,11 +83,14 @@
         
         /* 交互特效 */
         .highlight-select { background-color: #baca44 !important; }
-        .highlight-hint::after { content: ''; width: 26%; height: 26%; background-color: rgba(0,0,0,0.25); border-radius: 50%; position: absolute; pointer-events: none; }
+        /* 空白格的提示：实心小圆点 */
+        .highlight-hint::after { content: ''; width: 26%; height: 26%; background-color: rgba(0,0,0,0.25); border-radius: 50%; position: absolute; pointer-events: none; z-index: 5; }
+        /* 吃子格的提示：空心大圆圈套在棋子上 */
+        .highlight-capture::after { content: ''; width: 85%; height: 85%; border: 6px solid rgba(0,0,0,0.25); border-radius: 50%; position: absolute; pointer-events: none; box-sizing: border-box; z-index: 5; }
         .in-check { box-shadow: inset 0 0 25px red !important; background-color: #ffcdd2 !important; }
         
-        /* 使用内阴影实现半透明叠加，避免覆盖原有黑白格颜色 */
-        .last-move { box-shadow: inset 0 0 0 100px rgba(255, 255, 0, 0.35) !important; }
+        /* 优化透明度：将透明度降到了 0.15 */
+        .last-move { box-shadow: inset 0 0 0 100px rgba(255, 255, 0, 0.15) !important; }
         
         .piece-img { width: 90%; height: 90%; pointer-events: none; user-select: none; }
     </style>
@@ -118,9 +128,17 @@
     <div id="status">正在初始化游戏...</div>
     
     <div id="game-controls">
-        <button class="btn-secondary" id="hint-btn" onclick="toggleHints()">👁️ 路径提示: 开</button>
+        <!-- 新增：漂亮的滑块开关 -->
+        <div class="switch-container">
+            <span style="font-size: 14px; font-weight: bold; color: #444;">👁️ 提示</span>
+            <label class="switch">
+                <input type="checkbox" id="hint-switch" checked onchange="toggleHints(this)">
+                <span class="slider"></span>
+            </label>
+        </div>
+        
         <div id="emoji-container">
-            <button class="btn-info" onclick="toggleEmojiPanel()">😀 发表情</button>
+            <button class="btn-info" onclick="toggleEmojiPanel()">😀 表情</button>
             <div id="emoji-panel">
                 <div class="emoji-btn" onclick="sendEmoji('👋')">👋</div>
                 <div class="emoji-btn" onclick="sendEmoji('😂')">😂</div>
@@ -217,7 +235,7 @@
     var myColor = "white";
     var selectedSquare = null;
     
-    // 新增设置变量
+    // 全局控制变量
     var showHints = true;
     var isUndoPending = false; 
     var pendingPromotionMove = null;
@@ -227,7 +245,7 @@
     if (typeof GoEasy !== 'undefined') {
         goeasy = GoEasy.getInstance({
             host: "hangzhou.goeasy.io", 
-            appkey: "BC-58fd21e3fbff443587a9b9f35137cb4e",
+            appkey: "BC-58fd21e3fbff443587a9b9f35137cb4e", // 【这里还是你的 Appkey】
             modules: ['pubsub']
         });
         goeasy.connect({
@@ -333,7 +351,6 @@
                 var data = JSON.parse(msg.content);
                 if(data.sender === myColor) return; 
                 
-                // 棋盘同步与身份拉取
                 if(data.type === 'move' || data.type === 'sync') {
                     if (data.identity) oppIdentity = data.identity;
                     if(game.fen() !== data.fen) {
@@ -345,7 +362,7 @@
                         if(data.type === 'move') handleMoveAftermath(data.moveInfo, false);
                         else updateStatusText(); 
                     } else {
-                        updateStatusText(); // 即使棋盘没变，身份更新了也要刷新文字
+                        updateStatusText(); 
                     }
                 }
                 
@@ -355,7 +372,6 @@
                     broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
                 }
 
-                // 悔棋握手
                 if(data.type === 'request_undo') {
                     if (confirm(`对手 (${oppIdentity}) 请求退一步棋 (悔棋)，是否同意？`)) {
                         broadcast({ type: 'agree_undo' });
@@ -375,7 +391,6 @@
                     updateStatusText();
                 }
 
-                // 重开握手
                 if(data.type === 'request_restart') {
                     if (confirm(`对手 (${oppIdentity}) 请求重开一局，是否同意？`)) {
                         broadcast({ type: 'agree_restart' });
@@ -392,7 +407,6 @@
                     updateStatusText();
                 }
 
-                // Emoji
                 if(data.type === 'emoji') {
                     showFloatingEmoji(data.value, false);
                 }
@@ -406,9 +420,10 @@
     // ==========================================
     // 5. 对局控制与特殊逻辑
     // ==========================================
-    function toggleHints() {
-        showHints = !showHints;
-        document.getElementById('hint-btn').innerText = showHints ? "👁️ 路径提示: 开" : "👁️ 路径提示: 关";
+    
+    // 响应开关滑块
+    function toggleHints(checkbox) {
+        showHints = checkbox.checked;
         updateBoardState();
     }
 
@@ -522,12 +537,13 @@
     }
 
     function updateBoardState() {
+        // 清理旧标记，包含吃子标记 highlight-capture
         document.querySelectorAll('.square').forEach(function(sq) {
             sq.innerHTML = '';
-            sq.classList.remove('highlight-select', 'highlight-hint', 'in-check', 'last-move');
+            sq.classList.remove('highlight-select', 'highlight-hint', 'highlight-capture', 'in-check', 'last-move');
         });
 
-        // 轨迹半透明叠加阴影
+        // 轨迹半透明叠加阴影 (透明度已调低)
         var history = game.history({ verbose: true });
         if (history.length > 0) {
             var lastMove = history[history.length - 1];
@@ -562,7 +578,14 @@
                 var moves = game.moves({ square: selectedSquare, verbose: true });
                 for (var i = 0; i < moves.length; i++) {
                     var hintSquare = document.getElementById(moves[i].to);
-                    if(hintSquare) hintSquare.classList.add('highlight-hint');
+                    if (hintSquare) {
+                        // 如果包含 'c' (Capture 吃子) 或 'e' (En Passant 吃过路兵) 标记
+                        if (moves[i].flags.includes('c') || moves[i].flags.includes('e')) {
+                            hintSquare.classList.add('highlight-capture');
+                        } else {
+                            hintSquare.classList.add('highlight-hint');
+                        }
+                    }
                 }
             }
         }
@@ -583,7 +606,6 @@
         var sqId = e.currentTarget.id;
         
         if (selectedSquare) {
-            // 升变规则检测
             var possibleMoves = game.moves({ verbose: true });
             var isPromo = possibleMoves.some(m => m.from === selectedSquare && m.to === sqId && m.flags.includes('p'));
             
@@ -593,7 +615,6 @@
                 return; 
             }
 
-            // 常规移动
             var move = game.move({ from: selectedSquare, to: sqId, promotion: 'q' });
             if (move) {
                 selectedSquare = null;
@@ -605,7 +626,6 @@
                     selectedSquare = sqId;
                     updateBoardState();
                 } else {
-                    // 非法落点，发出警告声
                     playErrorSound();
                     selectedSquare = null;
                     updateBoardState();
@@ -654,7 +674,6 @@
         if (game.game_over()) {
             if (game.in_checkmate()) {
                 var turnColor = game.turn() === 'w' ? 'white' : 'black';
-                // 如果当前轮到的颜色和我一致，说明我被将死了，对方赢了
                 var winnerName = (turnColor === myColor) ? oppIdentity : myIdentity;
                 overlay.innerHTML = `🎉 将杀！<br><span style="font-size:36px; margin-top:10px;">${winnerName} 获胜！</span>`;
             } else {
@@ -665,7 +684,6 @@
             overlay.style.display = 'none';
         }
 
-        // 将军红光保留
         if (game.in_check() || game.in_checkmate()) {
             var turn = game.turn();
             var files = ['a','b','c','d','e','f','g','h'];
