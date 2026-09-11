@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.2.0 | 最后更新: 2026-09-11
+      版本: 1.2.1 | 最后更新: 2026-09-11
       变更:
+        v1.2.1 - 修复角色弹窗全部显示已被选 + 网页端加入无反应
         v1.2.0 - 棋盘上下身份栏 + 回合指示 + 已吃子显示 + 角色弹窗锁定
         v1.1.5 - 修复第二个人被误判为观战的 bug；去除阻塞式 alert
         v1.1.4 - 新增观战模式 + 房满检查 + 自定义身份
@@ -298,6 +299,9 @@
     var showCustomInput = false;
     var customIdentity = '';
     var _customIdentityConfirmed = null;
+    var _roomIdentities = [];
+    var _rolePickerMode = '';
+    var _rolePickIdx = 0;
 
     function initGoEasy() {
         if (!goeasy) {
@@ -473,8 +477,6 @@
             el.style.display = 'none';
         }
     }
-
-    var _rolePickIdx = 0;
 
     function showRolePicker(mode) {
         var occupied = _roomIdentities || [];
