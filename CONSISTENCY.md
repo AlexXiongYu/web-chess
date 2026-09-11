@@ -93,6 +93,55 @@
 - B. **微信云托管 / 自建 WebSocket**：官方明确「使用微信云托管作为后端服务可**无需配置通讯域名**」（走 callContainer / connectContainer）。可用 CloudBase 云托管自建 WS，替换 GoEasy。
 - C. **家庭自用临时**：体验版 + 手机开启「调试模式」可不校验域名（不发布上线，仅自用）。
 
+### 4.6 代码上传：两条通道（**2026-09-11 已跑通方案 B**）
+
+| | 方案 A：开发者工具 CLI | 方案 B：miniprogram-ci（**已采用**） |
+|---|---|---|
+| 依赖 | 必须开着微信开发者工具窗口 | **完全无 GUI**，命令行/双击即传 |
+| 前置 | 设置 → 安全设置 → 开启「服务端口」 | 后台生成「小程序代码上传密钥」 |
+| 稳定性 | 工具关掉后 CLI 拉起会卡 `wait IDE port timeout`（已实测失败） | 稳定，40s 完成 |
+| 版本归属 | 显示你自己的微信号 | 显示「**ci机器人1**」（见下） |
+
+#### 4.6.1 方案 B 用法
+
+**一键（推荐）**：双击 `WeChatProjects/upload_miniprogram.bat` → 按提示输入版本号与备注。
+
+**带参**：`upload_miniprogram.bat 1.1.4 "清理开发期调试代码"`
+
+**底层命令**（bat 内部做的事）：
+```
+cd C:\Users\52300\WeChatProjects\.ci-secrets
+set NODE_PATH=C:\Users\52300\.workbuddy\binaries\node\workspace\node_modules
+set APPDATA=C:\Users\52300\AppData\Roaming
+<managed node> wx-upload.js 1.1.4 "备注"
+```
+
+#### 4.6.2 三个必须知道的坑（踩过）
+
+1. **`APPDATA` 必须是有效值**。当前 shell 里 `APPDATA` 为空，会让 miniprogram-ci 的依赖 `npm-conf` 抛
+   `TypeError: The "paths[0]" argument must be of type string`。bat / 脚本里显式 `set APPDATA=...` 解决。
+2. **加载方式用 `NODE_PATH`**，不要在 `.ci-secrets` 里另装一份 node_modules；托管 node：
+   `C:\Users\52300\.workbuddy\binaries\node\versions\24.14.0\node.exe`，包在 `...\node\workspace\node_modules`。
+3. **bat 必须纯 ASCII**（沿用 `restart_autoreply.bat` 的三条铁律）：`chcp 65001` + UTF-8 中文会让 cmd 立即中止整个批处理；
+   中文输出只允许由 `node.exe` 打印，不能写进 bat 文本。
+
+#### 4.6.3 关于「开发者 = ci机器人1」
+
+miniprogram-ci 上传的版本，后台「版本管理」里**开发者一栏显示的是 CI 机器人代号，不是你的微信号**。
+上传请求带 `robot=1`（实测 URL 可见 `&robot=1&`），所以显示「ci机器人1」。
+- 这是**来源标记，不是权限问题**，不影响体验版、不影响提交审核。
+- 密钥本身就是在后台「小程序代码上传 → ci机器人1」下生成的，两边编号一致。
+- 想改成别的编号：后台给另一个机器人（2~30）生成密钥，并在 `wx-upload.js` 的 `ci.upload()` 里加 `robot: 2`。
+- 想显示回你自己的账号：用方案 A（开发者工具）上传即可。
+
+#### 4.6.4 已知无害告警
+
+```
+try to get input sourcemap of .../utils/chess.js catch error TypeError ...
+```
+原因：`utils/chess.js`（压缩版）第 13 行残留 `//# sourceMappingURL=/sm/....map`，指向一个包里不存在的 map。
+**不影响上传与运行**，可忽略；或删掉该注释行消除告警（属清理动作，先确认再删）。
+
 ---
 
 ## 五、同步开发约定（防漂移）
