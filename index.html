@@ -7,7 +7,7 @@
     <!--
       版本: 1.1.5 | 最后更新: 2026-09-11
       变更:
-        v1.1.5 - 修复第二个人被误判为观战的 bug
+        v1.1.5 - 修复第二个人被误判为观战的 bug；去除阻塞式 alert
         v1.1.4 - 新增观战模式 + 房满检查 + 自定义身份
         v1.1.3 - 清理开发期调试代码
         v1.1.2 - 增加转发分享权限
@@ -378,7 +378,6 @@
         _roomColors = {};
         currentRoom = roomId;
         connectRoom(roomId);
-        alert("正在检查房间...");
         setTimeout(function() {
             if (!_checkingRoom) return;
             _checkingRoom = false;
