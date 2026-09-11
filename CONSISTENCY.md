@@ -189,17 +189,23 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 | 双方同时请求悔棋 | 两边都在 pending，交叉 `agree` 后撤销步数错乱 | 自己 pending 时收到对方请求 → 直接回 `reject` |
 | `load_pgn` / `load` 无保护 | 对端发来残缺 fen/pgn 时抛错，整条消息链中断 | try/catch，失败只跳过这一条 |
 | 观战者收到走子会振动 | 只读方不该产生走子反馈 | 观战者只刷新棋盘 |
+| 观战者看到自己被宣布为冠军 | 将杀提示用 `myIdentity`/`oppIdentity` 取胜者，而观战者**不是对局方**，这两个字段指向观战者自己 → 把观众名当冠军 | 观战者改用身份表 `_playerIdentities[winnerColor]`；对弈者逻辑不变 |
 | 网页版 `#status` 元素已删但代码仍在写它 | `getElementById` 返回 null → `TypeError`。**`requestUndo`/`requestRestart` 在 broadcast 之前抛错 → 悔棋/重开请求根本发不出去**；`window.onload` 里同样抛错 → `checkSavedGame()` 执行不到 → 「恢复刚才断线的对局」按钮永不显示 | 移除全部 `#status` 访问 |
 
 ### 5.4 回归验证
 
 两端各有一份 Node 探针，**改协议后必须跑过**：
 
-- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（30 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/对弈者回归）
-- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（14 项，同一批场景）
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（32 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/对弈者回归）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（17 项，同一批场景 + 将杀胜者）
 
 做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
 或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有弹窗 / 有没有 publish / 棋局 fen 变没变"。
+
+两份探针都支持从命令行传源码路径（`node probe.js <源码路径>`），
+所以可对 `git show <旧commit>:<文件>` 导出的**修复前版本**跑一遍，
+确认新断言在旧代码上**确实失败**（证明断言有效、不是恒真）—— 这一步是新增断言时的强制动作。
+例：将杀胜者那条在修复前会打出 `🎉 将杀！👨🏻 米爸 获胜！`（把观战者那侧名字当冠军），修复后通过。
 
 ---
 
