@@ -1,7 +1,7 @@
 # 网页版 ↔ 小程序版 一致性对照报告
 
 > 生成时间：2026-09-11
-> 网页版：`chess-web/`（本目录）　小程序版：`WeChatProjects/miniprogram-1`
+> 网页版：`docs/`（本目录，GitHub Pages）　小程序版：`WeChatProjects/miniprogram-1`
 > 目标：两边共用同一 GoEasy appkey 与房间协议，房间互通、一起开发一起更新。
 
 ## 一、结论
@@ -20,7 +20,7 @@
 | GoEasy host | `hangzhou.goeasy.io` | 同左 |
 | 房间号生成 | `floor(1000+rand*9000)` → 4位 | 同左 |
 | channel | `= roomId` | 同左 |
-| 消息协议 | move/sync/request_sync/request_undo/agree_undo/reject_undo/request_restart/agree_restart/reject_restart/emoji | 同左 |
+| 消息协议 | move/sync/request_sync/request_undo/agree_undo/reject_undo/request_restart/agree_restart/reject_restart/emoji/room_check/room_info/spectator_joined/spectator_left | 同左 |
 | 消息字段 | `{sender, fen, pgn, moveInfo, identity, value}` | 同左 |
 | 回声过滤 | `data.sender === myColor` 丢弃 | 同左 |
 | 走子同步 | `load_pgn(pgn)` 否则 `load(fen)` | 同左 |

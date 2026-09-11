@@ -4,6 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
+    <!--
+      版本: 1.2.4 | 最后更新: 2026-09-12
+      变更:
+        v1.2.4 - 小程序端：移除 app.wxss 全局 .container（整页塌陷根因）+ 控制栏改换行 + 角色弹窗选中态
+                 （网页端无此问题：网页版不需要 app.wxss，控制栏 nowrap 在浏览器可横向滚动）
+        v1.2.3 - 小程序端：补全身份栏/吃子图标 WXSS + 初始化 _rolePickIdx（网页端无此问题）
+        v1.2.2 - 修复白方吃子图标不显示 + 按钮栏布局 + 排成一行
+        v1.2.0 - 棋盘上下身份栏 + 回合指示 + 已吃子显示 + 角色弹窗锁定
+        v1.1.5 - 修复第二个人被误判为观战的 bug；去除阻塞式 alert
+        v1.1.4 - 新增观战模式 + 房满检查 + 自定义身份
+        v1.1.3 - 清理开发期调试代码
+        v1.1.2 - 增加转发分享权限
+        v1.1.1 - 原生小程序移植 + GoEasy 实时联机 + 离线同屏兜底
+      协议版本与小程序端一致，消息 type / 字段 / appkey / host 同步维护。
+    -->
     <style>
         body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
         .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
@@ -21,7 +36,7 @@
         #status { font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 5px; display: none; }
         #network-warning { display: none; color: white; background: #d32f2f; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
 
-        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; flex-wrap: wrap; align-items: center;}
+        #game-controls { display: none; margin-bottom: 15px; gap: 10px; justify-content: center; flex-wrap: nowrap; align-items: center; overflow-x: auto; }
         .btn-warning { background-color: #ff9800 !important; }
         .btn-warning:hover { background-color: #e68a00 !important; }
         .btn-danger { background-color: #dc3545 !important; }
@@ -93,6 +108,22 @@
         .last-move { box-shadow: inset 0 0 0 100px rgba(255, 255, 0, 0.25) !important; }
 
         .piece-img { width: 90%; height: 90%; pointer-events: none; user-select: none; }
+
+        /* 身份栏 */
+        .player-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; margin: 4px 0; border-radius: 6px; background: #f8f9fa; min-height: 36px; }
+        .player-bar.active-turn { background: #e8f5e9; border-left: 4px solid #28a745; }
+        .player-name { font-size: 14px; font-weight: bold; color: #444; white-space: nowrap; }
+        .captured-row { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
+        .captured-piece { width: 18px; height: 18px; flex-shrink: 0; }
+
+        /* 角色选择弹窗 */
+        #role-picker-mask { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 200; display: flex; justify-content: center; align-items: center; }
+        #role-picker-box { background: white; border-radius: 12px; padding: 20px; width: 85%; max-width: 320px; box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
+        #role-picker-title { font-size: 18px; font-weight: bold; text-align: center; margin-bottom: 12px; }
+        .role-pick-option { padding: 12px; margin: 6px 0; border-radius: 8px; background: #f0f4ff; text-align: center; font-size: 16px; font-weight: bold; cursor: pointer; }
+        .role-pick-option.role-occupied { background: #eee; color: #999; cursor: default; }
+        .role-pick-option.role-selected { background: #c8e6c9; }
+        .role-pick-custom { background: #fff8e1; color: #f57f17; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -103,15 +134,6 @@
     <div id="network-warning">⚠️ 检测到通信被拦截。当前仅支持同屏单机对战。</div>
 
     <div class="controls" id="setup-panel">
-        <div style="margin-bottom: 15px;">
-            <strong>请选择身份：</strong>
-            <select id="role-select">
-                <option value="👨🏻 米爸">👨🏻 米爸</option>
-                <option value="👩🏻 米妈">👩🏻 米妈</option>
-                <option value="👧🏻 小米米">👧🏻 小米米</option>
-            </select>
-        </div>
-
         <button id="resume-btn" onclick="resumeGame()">🔄 恢复刚才断线的对局</button>
         <button onclick="createRoom()">新建房间 (执白)</button>
         <div style="margin: 10px 0; color: #888; font-size: 14px;">— 或者 —</div>
@@ -119,16 +141,55 @@
         <button onclick="joinRoom()">加入房间 (执黑)</button>
     </div>
 
+    <!-- 角色选择弹窗 -->
+    <div id="role-picker-mask" style="display:none;" onclick="cancelRolePicker()">
+        <div id="role-picker-box" onclick="event.stopPropagation()">
+            <div id="role-picker-title"></div>
+            <div id="role-picker-list"></div>
+            <div id="role-picker-custom-row" style="display:none;">
+                <input id="role-custom-input" type="text" placeholder="输入自定义名称" maxlength="10" oninput="onCustomIdentityInput()" style="flex:1;padding:8px;border:1px solid #007bff;border-radius:4px;">
+                <button onclick="confirmCustomFromPicker()" style="background:#28a745;color:#fff;margin:0;padding:6px 12px;">确定</button>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:15px;justify-content:center;">
+                <button onclick="cancelRolePicker()" style="background:#ccc;color:#333;">取消</button>
+                <button onclick="confirmRolePicker()" style="background:#007bff;">确认</button>
+            </div>
+        </div>
+    </div>
+
     <div id="room-info">
         <div style="font-size: 14px;">当前房间号</div>
         <div id="room-id-text"></div>
         <div style="font-size: 12px; color: #666;" id="room-tip">请将号码发给对方，等待加入</div>
+        <div style="font-size: 14px; color: #6c63ff; margin-top: 6px; font-weight: bold; display: none;" id="spectator-info"></div>
     </div>
 
-    <div id="status">正在初始化游戏...</div>
+    <!-- 上方身份栏（对方） -->
+    <div id="top-bar" class="player-bar" style="display:none;">
+        <span id="top-player-name" class="player-name"></span>
+        <div id="top-captured" class="captured-row"></div>
+    </div>
+
+    <div id="board-container">
+        <div id="board"></div>
+        <div id="endgame-overlay"></div>
+        <div id="promotion-modal">
+            <div style="font-weight: bold; margin-bottom: 5px;">小兵升变！请选择：</div>
+            <button class="promo-btn" onclick="confirmPromotion('q')">♕ 后 (Queen)</button>
+            <button class="promo-btn" onclick="confirmPromotion('r')">♖ 车 (Rook)</button>
+            <button class="promo-btn" onclick="confirmPromotion('n')">♘ 马 (Knight)</button>
+            <button class="promo-btn" onclick="confirmPromotion('b')">♗ 象 (Bishop)</button>
+            <button class="promo-btn" style="background: #ffcdd2;" onclick="cancelPromotion()">❌ 取消</button>
+        </div>
+    </div>
+
+    <!-- 下方身份栏（己方） -->
+    <div id="bottom-bar" class="player-bar" style="display:none;">
+        <span id="bottom-player-name" class="player-name"></span>
+        <div id="bottom-captured" class="captured-row"></div>
+    </div>
 
     <div id="game-controls">
-        <!-- 新增：漂亮的滑块开关 -->
         <div class="switch-container">
             <span style="font-size: 14px; font-weight: bold; color: #444;">👁️ 提示</span>
             <label class="switch">
@@ -161,18 +222,6 @@
         <button class="btn-danger" id="restart-btn" onclick="requestRestart()">🔄 重开</button>
     </div>
 
-    <div id="board-container">
-        <div id="board"></div>
-        <div id="endgame-overlay"></div>
-        <div id="promotion-modal">
-            <div style="font-weight: bold; margin-bottom: 5px;">小兵升变！请选择：</div>
-            <button class="promo-btn" onclick="confirmPromotion('q')">♕ 后 (Queen)</button>
-            <button class="promo-btn" onclick="confirmPromotion('r')">♖ 车 (Rook)</button>
-            <button class="promo-btn" onclick="confirmPromotion('n')">♘ 马 (Knight)</button>
-            <button class="promo-btn" onclick="confirmPromotion('b')">♗ 象 (Bishop)</button>
-            <button class="promo-btn" style="background: #ffcdd2;" onclick="cancelPromotion()">❌ 取消</button>
-        </div>
-    </div>
 </div>
 
 <!-- 本地化依赖，与小程序版使用同一份构建，保证两边行为一致 -->
@@ -245,6 +294,16 @@
     var oppIdentity = "对方";
     var pendingCreate = false;
     var pendingJoin = false;
+    var isSpectator = false;
+    var spectators = [];
+    var _checkingRoom = false;
+    var _roomColors = {};
+    var showCustomInput = false;
+    var customIdentity = '';
+    var _customIdentityConfirmed = null;
+    var _roomIdentities = [];
+    var _rolePickerMode = '';
+    var _rolePickIdx = 0;
 
     function initGoEasy() {
         if (!goeasy) {
@@ -280,6 +339,12 @@
         initGoEasy();
     }
 
+    window.addEventListener('beforeunload', function() {
+        if (isSpectator && currentRoom) {
+            broadcast({ type: 'spectator_left', identity: myIdentity });
+        }
+    });
+
     function broadcast(payload) {
         if (!isNetworkReady || currentRoom === "") return;
         payload.sender = myColor;
@@ -302,19 +367,9 @@
 
     function createRoom() {
         initAudio();
-        myIdentity = document.getElementById('role-select').value;
-        myColor = "white";
-        game.reset();
-        localStorage.removeItem('chessSave');
-        if (connectState === 'ready') {
-            doCreateRoom();
-        } else if (connectState === 'failed') {
-            fallbackLocal();
-        } else {
-            pendingCreate = true;
-            alert('正在连接服务器…');
-            if (connectState === 'idle' && typeof GoEasy !== 'undefined') initGoEasy();
-        }
+        _rolePickIdx = 0;
+        _roomIdentities = [];
+        showRolePicker('create');
     }
 
     function doCreateRoom() {
@@ -327,30 +382,44 @@
 
     function joinRoom() {
         initAudio();
-        if (connectState === 'ready') {
-            doJoinRoom();
-        } else if (connectState === 'failed') {
-            alert('连接失败，无法加入房间');
-        } else {
-            pendingJoin = true;
-            alert('正在连接服务器…');
-            if (connectState === 'idle' && typeof GoEasy !== 'undefined') initGoEasy();
-        }
+        _rolePickIdx = 0;
+        showRolePicker('join');
     }
 
     function doJoinRoom() {
         var roomId = document.getElementById('room-input').value.trim();
         if(!roomId) return alert("请输入房间号！");
 
-        currentRoom = roomId;
         myColor = "black";
-        myIdentity = document.getElementById('role-select').value;
-        document.getElementById('room-tip').innerText = "你已加入房间，开始对弈";
-
-        game.reset();
-        showGameUI(roomId);
+        _checkingRoom = true;
+        _roomColors = {};
+        currentRoom = roomId;
         connectRoom(roomId);
-        saveGameToLocal();
+        setTimeout(function() {
+            if (!_checkingRoom) return;
+            _checkingRoom = false;
+            var hasWhite = _roomColors['white'];
+            var hasBlack = _roomColors['black'];
+            if (hasWhite && hasBlack) {
+                isSpectator = true;
+                myColor = 'spectator';
+                game.reset();
+                document.getElementById('room-tip').innerText = "观战中（只读）";
+                showGameUI(roomId);
+                broadcast({ type: 'spectator_joined', identity: myIdentity });
+                broadcast({ type: 'request_sync', identity: myIdentity });
+                saveGameToLocal();
+            } else {
+                if (hasWhite) myColor = 'black';
+                else if (hasBlack) myColor = 'white';
+                else myColor = 'black';
+                game.reset();
+                document.getElementById('room-tip').innerText = "你已加入房间，开始对弈";
+                showGameUI(roomId);
+                broadcast({ type: 'request_sync', identity: myIdentity });
+                saveGameToLocal();
+            }
+        }, 3000);
     }
 
     // 连接失败时的离线同屏兜底（与小程序版行为一致）
@@ -368,6 +437,7 @@
 
         currentRoom = savedData.roomId;
         myColor = savedData.color;
+        isSpectator = (myColor === 'spectator');
         if(savedData.identity) myIdentity = savedData.identity;
         if(savedData.oppIdentity) oppIdentity = savedData.oppIdentity;
 
@@ -387,11 +457,105 @@
         document.getElementById('room-info').style.display = 'block';
         document.getElementById('room-id-text').innerText = roomId;
 
-        document.getElementById('status').style.display = 'block';
+        document.getElementById('top-bar').style.display = 'flex';
+        document.getElementById('bottom-bar').style.display = 'flex';
         document.getElementById('game-controls').style.display = 'flex';
+        document.getElementById('undo-btn').style.display = isSpectator ? 'none' : 'inline-block';
+        document.getElementById('restart-btn').style.display = isSpectator ? 'none' : 'inline-block';
         document.getElementById('board-container').style.display = 'block';
         drawBoardDOM();
         updateBoardState();
+    }
+
+    function updateSpectatorDisplay() {
+        var el = document.getElementById('spectator-info');
+        if (!el) return;
+        if (spectators.length > 0) {
+            var names = [];
+            for (var i = 0; i < spectators.length; i++) { names.push(spectators[i].identity); }
+            el.innerText = '👀 观战：' + names.join('、');
+            el.style.display = 'block';
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    function showRolePicker(mode) {
+        var occupied = _roomIdentities || [];
+        document.getElementById('role-picker-title').innerText = mode === 'create' ? '建房 — 选择身份' : '加入 — 选择身份';
+        var listEl = document.getElementById('role-picker-list');
+        var roles = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'];
+        listEl.innerHTML = '';
+        for (var i = 0; i < roles.length; i++) {
+            var taken = occupied.indexOf(roles[i]) !== -1;
+            var div = document.createElement('div');
+            div.className = 'role-pick-option' + (taken ? ' role-occupied' : '') + (_rolePickIdx === i ? ' role-selected' : '');
+            div.innerText = roles[i] + (taken ? '（已被选）' : '');
+            if (!taken) { div.setAttribute('data-idx', i); div.onclick = function() { _rolePickIdx = parseInt(this.getAttribute('data-idx')); showRolePicker(mode); }; }
+            listEl.appendChild(div);
+        }
+        var custDiv = document.createElement('div');
+        custDiv.className = 'role-pick-option role-pick-custom';
+        custDiv.innerText = '✏️ 自定义...';
+        custDiv.onclick = function() { _rolePickIdx = -1; document.getElementById('role-picker-custom-row').style.display = 'flex'; };
+        listEl.appendChild(custDiv);
+        document.getElementById('role-picker-custom-row').style.display = 'none';
+        _rolePickerMode = mode;
+        document.getElementById('role-picker-mask').style.display = 'flex';
+    }
+    function confirmRolePicker() {
+        var identity;
+        if (document.getElementById('role-picker-custom-row').style.display !== 'none' && customIdentity) {
+            identity = customIdentity.trim();
+            if (!identity) return alert("请输入自定义名称");
+            _customIdentityConfirmed = identity;
+        } else if (_rolePickIdx >= 0) {
+            identity = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'][_rolePickIdx];
+        } else {
+            return alert("请选择一个身份");
+        }
+        myIdentity = identity;
+        document.getElementById('role-picker-mask').style.display = 'none';
+        document.getElementById('role-picker-custom-row').style.display = 'none';
+        if (_rolePickerMode === 'create') {
+            myColor = 'white';
+            game.reset();
+            localStorage.removeItem('chessSave');
+            if (connectState === 'ready') { doCreateRoom(); }
+            else if (connectState === 'failed') { fallbackLocal(); }
+            else { pendingCreate = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+        } else {
+            if (connectState === 'ready') { doJoinRoom(); }
+            else if (connectState === 'failed') { alert('连接失败'); }
+            else { pendingJoin = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+        }
+    }
+    function cancelRolePicker() {
+        document.getElementById('role-picker-mask').style.display = 'none';
+        document.getElementById('role-picker-custom-row').style.display = 'none';
+    }
+    function confirmCustomFromPicker() {
+        var name = (customIdentity || '').trim();
+        if (!name) return alert("请输入自定义名称");
+        _customIdentityConfirmed = name;
+        myIdentity = name;
+        document.getElementById('role-picker-mask').style.display = 'none';
+        document.getElementById('role-picker-custom-row').style.display = 'none';
+        if (_rolePickerMode === 'create') {
+            myColor = 'white';
+            game.reset();
+            localStorage.removeItem('chessSave');
+            if (connectState === 'ready') { doCreateRoom(); }
+            else if (connectState === 'failed') { fallbackLocal(); }
+            else { pendingCreate = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+        } else {
+            if (connectState === 'ready') { doJoinRoom(); }
+            else if (connectState === 'failed') { alert('连接失败'); }
+            else { pendingJoin = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+        }
+    }
+    function onCustomIdentityInput() {
+        customIdentity = document.getElementById('role-custom-input').value;
     }
 
     // ==========================================
@@ -403,7 +567,7 @@
             channel: roomId,
             onMessage: function(msg) {
                 var data = JSON.parse(msg.content);
-                if(data.sender === myColor) return;
+                if(!isSpectator && data.type !== 'room_check' && data.type !== 'room_info' && data.sender === myColor) return;
 
                 if(data.type === 'move' || data.type === 'sync') {
                     if (data.identity) oppIdentity = data.identity;
@@ -424,6 +588,31 @@
                     if (data.identity) oppIdentity = data.identity;
                     updateStatusText();
                     broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
+                }
+
+                // ===== 房满检查：响应新人的 room_check =====
+                if(data.type === 'room_check' && currentRoom && !_checkingRoom) {
+                    broadcast({ type: 'room_info', color: isSpectator ? 'spectator' : myColor, identity: myIdentity });
+                }
+                // ===== 房满检查：收集 room_info 回复 =====
+                if(data.type === 'room_info' && _checkingRoom) {
+                    if (data.color && !_roomColors[data.color]) {
+                        _roomColors[data.color] = data.identity;
+                    }
+                }
+                // ===== 观战：新人加入 =====
+                if(data.type === 'spectator_joined') {
+                    var found = false;
+                    for (var i = 0; i < spectators.length; i++) { if (spectators[i].identity === data.identity) { found = true; break; } }
+                    if (!found) {
+                        spectators.push({ identity: data.identity });
+                        updateSpectatorDisplay();
+                    }
+                }
+                // ===== 观战：有人离开 =====
+                if(data.type === 'spectator_left') {
+                    spectators = spectators.filter(function(s) { return s.identity !== data.identity; });
+                    updateSpectatorDisplay();
                 }
 
                 if(data.type === 'request_undo') {
@@ -466,7 +655,11 @@
                 }
             },
             onSuccess: function() {
-                broadcast({ type: 'request_sync', identity: myIdentity });
+                if (_checkingRoom) {
+                    broadcast({ type: 'room_check' });
+                } else {
+                    broadcast({ type: 'request_sync', identity: myIdentity });
+                }
             }
         });
     }
@@ -572,6 +765,67 @@
     // ==========================================
     // 6. 界面渲染与棋盘交互
     // ==========================================
+    function buildCapturedDisplay(color) {
+        var starting = { w: { p:8, n:2, b:2, r:2, q:1, k:0 }, b: { p:8, n:2, b:2, r:2, q:1, k:0 } };
+        var opponent = color === 'w' ? 'b' : 'w';
+        var fen = game.fen().split(' ')[0];
+        var count = { p:0, n:0, b:0, r:0, q:0 };
+        for (var i = 0; i < fen.length; i++) {
+            var ch = fen[i];
+            if (ch === '/' || (ch >= '1' && ch <= '8')) continue;
+            var isOppo = opponent === 'b' ? (ch >= 'a' && ch <= 'z') : (ch >= 'A' && ch <= 'Z');
+            if (isOppo) {
+                var p = ch.toLowerCase();
+                if (count[p] !== undefined) count[p]++;
+            }
+        }
+        var captured = [];
+        for (var p in count) {
+            var n = starting[opponent][p] - count[p];
+            for (var j = 0; j < n; j++) {
+                var pieceChar = p.toUpperCase();
+                captured.push('images/pieces/' + opponent + pieceChar + '.png');
+            }
+        }
+        return captured;
+    }
+
+    function buildPlayerBars() {
+        var isWhite = myColor === 'white';
+        var oppColor = isWhite ? 'black' : 'white';
+        var oppName = oppIdentity || (oppColor === 'white' ? '白方' : '黑方');
+        var myName = myIdentity || (isWhite ? '白方' : '黑方');
+        var curTurn = game.turn() === 'w' ? 'white' : 'black';
+        var gameOver = game.game_over();
+        var oppCap = buildCapturedDisplay(isWhite ? 'b' : 'w');
+        var myCap = buildCapturedDisplay(isWhite ? 'w' : 'b');
+        var oppDot = gameOver ? '⚫' : (curTurn === oppColor ? '●' : '○');
+        var myDot = gameOver ? '⚫' : (curTurn === myColor ? '●' : '○');
+
+        document.getElementById('top-player-name').innerText = oppDot + ' ' + oppName;
+        document.getElementById('bottom-player-name').innerText = myDot + ' ' + myName;
+
+        var topRow = document.getElementById('top-captured');
+        topRow.innerHTML = '';
+        for (var i = 0; i < oppCap.length; i++) {
+            var img = document.createElement('img');
+            img.src = oppCap[i]; img.className = 'captured-piece';
+            topRow.appendChild(img);
+        }
+        var botRow = document.getElementById('bottom-captured');
+        botRow.innerHTML = '';
+        for (var j = 0; j < myCap.length; j++) {
+            var im = document.createElement('img');
+            im.src = myCap[j]; im.className = 'captured-piece';
+            botRow.appendChild(im);
+        }
+
+        var topBar = document.getElementById('top-bar');
+        var botBar = document.getElementById('bottom-bar');
+        topBar.className = 'player-bar' + (curTurn === oppColor && !gameOver ? ' active-turn' : '');
+        botBar.className = 'player-bar' + (curTurn === myColor && !gameOver ? ' active-turn' : '');
+    }
+
     function drawBoardDOM() {
         var boardDiv = document.getElementById('board');
         boardDiv.innerHTML = '';
@@ -651,7 +905,7 @@
     }
 
     function handleSquareClick(e) {
-        if (game.game_over() || pendingPromotionMove) return;
+        if (isSpectator || game.game_over() || pendingPromotionMove) return;
 
         if (isNetworkReady && currentRoom !== "") {
             var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
@@ -757,17 +1011,7 @@
     }
 
     function updateStatusText() {
-        var statusEl = document.getElementById('status');
-        if (game.game_over()) {
-            statusEl.innerText = '游戏结束，请查看棋盘结果';
-        } else {
-            var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
-            var turnText = (currentTurnColor === myColor) ? "自己走" : `对方 (${oppIdentity}) 走`;
-
-            var txt = `你是: ${myIdentity} | 当前: ${turnText}`;
-            if (game.in_check()) txt += ' (⚠️ 将军！)';
-            statusEl.innerText = txt;
-        }
+        if (!isSpectator) buildPlayerBars();
     }
 
     document.addEventListener('click', function(event) {
