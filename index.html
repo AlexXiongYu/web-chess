@@ -5,8 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.2.5 | 最后更新: 2026-09-12
+      版本: 1.2.6 | 最后更新: 2026-09-12
       变更:
+        v1.2.6 - 两端：观战者权限收紧（不再收到/响应悔棋重开、禁止 broadcast 改写对局、不回应 request_sync）；
+                 悔棋重开消息加 target 收件人；悔棋请求 20s 超时；交叉悔棋保护；
+                 观战者身份栏显示白方/黑方真实身份；
+                 网页版顺带修复 #status 元素已删但代码仍在写它导致的 TypeError
+                 （该错让悔棋/重开请求根本发不出去、"恢复断线对局"按钮永不显示）
         v1.2.5 - 小程序端：buildPlayerBars 里 myColor 漏写 this. 导致 render() 抛错，
                  棋盘与上下身份栏全空；另将棋盘尺寸改为 JS 计算下发，不再依赖 aspect-ratio
         v1.2.4 - 小程序端：移除 app.wxss 全局 .container（整页塌陷根因）+ 控制栏改换行 + 角色弹窗选中态
@@ -20,6 +25,7 @@
         v1.1.2 - 增加转发分享权限
         v1.1.1 - 原生小程序移植 + GoEasy 实时联机 + 离线同屏兜底
       协议版本与小程序端一致，消息 type / 字段 / appkey / host 同步维护。
+      观战者权限模型与回归探针见 CONSISTENCY.md 第五节。
     -->
     <style>
         body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
@@ -306,6 +312,16 @@
     var _roomIdentities = [];
     var _rolePickerMode = '';
     var _rolePickIdx = 0;
+    var undoTimer = null;
+    // 观战者用：记录白方/黑方的真实身份
+    var _playerIdentities = {};
+
+    // ===== 观战者权限（与小程序端同步维护，详见 docs/CONSISTENCY.md）=====
+    // 房间是 GoEasy 的一个频道，白方/黑方/观战者都收到全部消息，
+    // "谁有权处理哪条消息"必须由客户端自己把关。
+    var SPECTATOR_ALLOWED_SEND = ['request_sync', 'spectator_joined', 'spectator_left', 'room_check', 'room_info', 'emoji'];
+    var PLAYER_ONLY_RECV = ['request_undo', 'agree_undo', 'reject_undo', 'request_restart', 'agree_restart', 'reject_restart'];
+    var UNDO_REQ_TIMEOUT = 20000;
 
     function initGoEasy() {
         if (!goeasy) {
@@ -342,6 +358,7 @@
     }
 
     window.addEventListener('beforeunload', function() {
+        if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
         if (isSpectator && currentRoom) {
             broadcast({ type: 'spectator_left', identity: myIdentity });
         }
@@ -349,6 +366,11 @@
 
     function broadcast(payload) {
         if (!isNetworkReady || currentRoom === "") return;
+        // 观战者只读：从出口拦死对局控制类消息，杜绝"观战者改写对局"
+        if (isSpectator && SPECTATOR_ALLOWED_SEND.indexOf(payload.type) === -1) {
+            console.warn('[guard] 观战者只读，已拦截发送:', payload.type);
+            return;
+        }
         payload.sender = myColor;
         try { goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify(payload) }); }
         catch(e) {}
@@ -568,18 +590,33 @@
         goeasy.pubsub.subscribe({
             channel: roomId,
             onMessage: function(msg) {
-                var data = JSON.parse(msg.content);
+                var data;
+                try { data = JSON.parse(msg.content); } catch(e) { return; }
                 if(!isSpectator && data.type !== 'room_check' && data.type !== 'room_info' && data.sender === myColor) return;
 
-                if(data.type === 'move' || data.type === 'sync') {
-                    if (data.identity) oppIdentity = data.identity;
-                    if(game.fen() !== data.fen) {
-                        if (data.pgn) game.load_pgn(data.pgn);
-                        else game.load(data.fen);
+                // ===== 权限守卫 =====
+                // 观战者只读：悔棋/重开全系列一概不处理（观战者无权同意或拒绝）
+                if (isSpectator && PLAYER_ONLY_RECV.indexOf(data.type) > -1) return;
+                // 收件人校验：请求/应答类消息带 target，只有收件人处理。
+                // 不带 target 的是老版本发的，按老逻辑走（由上面的观战者守卫兜底），保证新旧版本可混用。
+                if (data.target && data.target !== myColor) return;
+                // 观战者：记录白方/黑方真实身份，供上下身份栏显示
+                if (isSpectator && data.identity) rememberPlayerIdentity(data.sender, data.identity);
 
+                if(data.type === 'move' || data.type === 'sync') {
+                    if (!isSpectator && data.identity) oppIdentity = data.identity;
+                    if(game.fen() !== data.fen) {
+                        // 对端可能发来残缺/非法的 fen 或 pgn，解析失败就跳过这一条
+                        try {
+                            if (data.pgn) game.load_pgn(data.pgn);
+                            else game.load(data.fen);
+                        } catch(e) {
+                            console.warn('[sync] 棋局同步失败，已忽略:', e && e.message);
+                            return;
+                        }
                         selectedSquare = null;
                         updateBoardState();
-                        if(data.type === 'move') handleMoveAftermath(data.moveInfo, false);
+                        if(data.type === 'move' && !isSpectator) handleMoveAftermath(data.moveInfo, false);
                         else updateStatusText();
                     } else {
                         updateStatusText();
@@ -587,7 +624,9 @@
                 }
 
                 if(data.type === 'request_sync') {
-                    if (data.identity) oppIdentity = data.identity;
+                    if (!isSpectator && data.identity) oppIdentity = data.identity;
+                    // 观战者手上不是权威棋局，绝不能回应 sync（否则会用自己的棋局覆盖对局）
+                    if (isSpectator) return;
                     updateStatusText();
                     broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
                 }
@@ -618,30 +657,31 @@
                 }
 
                 if(data.type === 'request_undo') {
+                    // 我自己正在等对方回应悔棋，对方也来请求 → 直接拒绝，避免双方交叉撤销导致步数错乱
+                    if (isUndoPending) { broadcast({ type: 'reject_undo', target: data.sender }); return; }
+                    // 应答带回 target，只有发起方能处理
                     if (confirm(`对手 (${oppIdentity}) 请求退一步棋 (悔棋)，是否同意？`)) {
-                        broadcast({ type: 'agree_undo' });
+                        broadcast({ type: 'agree_undo', target: data.sender });
                     } else {
-                        broadcast({ type: 'reject_undo' });
+                        broadcast({ type: 'reject_undo', target: data.sender });
                     }
                 }
                 if(data.type === 'agree_undo') {
-                    isUndoPending = false;
-                    document.getElementById('undo-btn').innerText = "🔙 悔棋";
+                    clearUndoPending();
                     executeUndo();
                 }
                 if(data.type === 'reject_undo') {
-                    isUndoPending = false;
-                    document.getElementById('undo-btn').innerText = "🔙 悔棋";
+                    clearUndoPending();
                     alert("对手无情地拒绝了你的悔棋请求。");
                     updateStatusText();
                 }
 
                 if(data.type === 'request_restart') {
                     if (confirm(`对手 (${oppIdentity}) 请求重开一局，是否同意？`)) {
-                        broadcast({ type: 'agree_restart' });
+                        broadcast({ type: 'agree_restart', target: data.sender });
                         executeRestart();
                     } else {
-                        broadcast({ type: 'reject_restart' });
+                        broadcast({ type: 'reject_restart', target: data.sender });
                     }
                 }
                 if(data.type === 'agree_restart') {
@@ -676,7 +716,41 @@
         updateBoardState();
     }
 
+    // 我在等的悔棋请求有结果了（同意/拒绝/超时），统一复位
+    function clearUndoPending() {
+        isUndoPending = false;
+        if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
+        var btn = document.getElementById('undo-btn');
+        if (btn) btn.innerText = "🔙 悔棋";
+    }
+
+    // 对方掉线/不回时不要永远卡在"⏳ 等待同意"
+    function startUndoTimer() {
+        if (undoTimer) clearTimeout(undoTimer);
+        undoTimer = setTimeout(function() {
+            if (!isUndoPending) return;
+            isUndoPending = false;
+            undoTimer = null;
+            var btn = document.getElementById('undo-btn');
+            if (btn) btn.innerText = "🔙 悔棋";
+            alert("对方未响应，悔棋请求已取消。");
+        }, UNDO_REQ_TIMEOUT);
+    }
+
+    // 观战者用：记录白方/黑方的真实身份
+    function rememberPlayerIdentity(sender, identity) {
+        if (sender !== 'white' && sender !== 'black') return;
+        if (!identity) return;
+        _playerIdentities[sender] = identity;
+    }
+
+    // 对手的颜色（请求类消息的收件人）
+    function oppColor() {
+        return myColor === 'white' ? 'black' : 'white';
+    }
+
     function requestUndo() {
+        if (isSpectator) return alert("观战中不能悔棋。");
         var historyLen = game.history().length;
         if (historyLen === 0) return alert("已经是开局状态了，无棋可悔。");
         if (isUndoPending) return alert("已发送悔棋请求，请等待对方响应后再试。");
@@ -689,9 +763,11 @@
 
             if (confirm("发送悔棋请求给对手？")) {
                 isUndoPending = true;
-                document.getElementById('undo-btn').innerText = "⏳ 等待同意";
-                document.getElementById('status').innerText = "已发送悔棋请求，等待对方同意...";
-                broadcast({ type: 'request_undo' });
+                var btn = document.getElementById('undo-btn');
+                if (btn) btn.innerText = "⏳ 等待同意";
+                // target 指定收件人：只有对手会处理，房间里的观战者与其他成员一律忽略
+                broadcast({ type: 'request_undo', target: oppColor() });
+                startUndoTimer();
             }
         } else {
             executeUndo();
@@ -699,6 +775,7 @@
     }
 
     function executeUndo() {
+        if (isSpectator) return;   // 观战者只读，不得改写对局
         var steps = 1;
         if (isNetworkReady && currentRoom !== "") {
             var currentTurn = game.turn() === 'w' ? 'white' : 'black';
@@ -712,19 +789,17 @@
             game.undo();
         }
 
-        isUndoPending = false;
-        document.getElementById('undo-btn').innerText = "🔙 悔棋";
+        clearUndoPending();
         selectedSquare = null;
         updateBoardState();
-        document.getElementById('status').innerText = "已成功悔棋。";
         broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
     }
 
     function requestRestart() {
+        if (isSpectator) return alert("观战中不能重开。");
         if (isNetworkReady && currentRoom !== "") {
             if (confirm("发送重开请求给对手？")) {
-                document.getElementById('status').innerText = "已发送重开请求，等待对手同意...";
-                broadcast({ type: 'request_restart' });
+                broadcast({ type: 'request_restart', target: oppColor() });
             }
         } else {
             if (confirm("确定要重新开始一局吗？")) executeRestart();
@@ -732,8 +807,8 @@
     }
 
     function executeRestart() {
-        isUndoPending = false;
-        document.getElementById('undo-btn').innerText = "🔙 悔棋";
+        if (isSpectator) return;   // 观战者只读，不得重置对局
+        clearUndoPending();
         game.reset();
         selectedSquare = null;
         updateBoardState();
@@ -793,6 +868,8 @@
     }
 
     function buildPlayerBars() {
+        // 观战者自己不是对局方，"对方/我"这套语义不成立，单独走一套
+        if (isSpectator) return buildSpectatorBars();
         var isWhite = myColor === 'white';
         var oppColor = isWhite ? 'black' : 'white';
         var oppName = oppIdentity || (oppColor === 'white' ? '白方' : '黑方');
@@ -826,6 +903,35 @@
         var botBar = document.getElementById('bottom-bar');
         topBar.className = 'player-bar' + (curTurn === oppColor && !gameOver ? ' active-turn' : '');
         botBar.className = 'player-bar' + (curTurn === myColor && !gameOver ? ' active-turn' : '');
+    }
+
+    // 观战者的上下两栏：按白方视角看棋盘（rank8 在上），所以上=黑方、下=白方
+    function buildSpectatorBars() {
+        var curTurn = game.turn() === 'w' ? 'white' : 'black';
+        var gameOver = game.game_over();
+        var topDot = gameOver ? '⚫' : (curTurn === 'black' ? '●' : '○');
+        var botDot = gameOver ? '⚫' : (curTurn === 'white' ? '●' : '○');
+
+        document.getElementById('top-player-name').innerText = topDot + ' ' + (_playerIdentities.black || '黑方');
+        document.getElementById('bottom-player-name').innerText = botDot + ' ' + (_playerIdentities.white || '白方');
+
+        setCapturedRow('top-captured', buildCapturedDisplay('b'));
+        setCapturedRow('bottom-captured', buildCapturedDisplay('w'));
+
+        document.getElementById('top-bar').className = 'player-bar' + (curTurn === 'black' && !gameOver ? ' active-turn' : '');
+        document.getElementById('bottom-bar').className = 'player-bar' + (curTurn === 'white' && !gameOver ? ' active-turn' : '');
+    }
+
+    function setCapturedRow(elId, list) {
+        var row = document.getElementById(elId);
+        if (!row) return;
+        row.innerHTML = '';
+        for (var i = 0; i < list.length; i++) {
+            var img = document.createElement('img');
+            img.src = list[i];
+            img.className = 'captured-piece';
+            row.appendChild(img);
+        }
     }
 
     function drawBoardDOM() {
@@ -1013,7 +1119,8 @@
     }
 
     function updateStatusText() {
-        if (!isSpectator) buildPlayerBars();
+        // 原来这里对观战者直接跳过，导致观战者的身份栏从不刷新；buildPlayerBars 内部已分支
+        buildPlayerBars();
     }
 
     document.addEventListener('click', function(event) {
@@ -1025,7 +1132,9 @@
     });
 
     window.onload = function() {
-        document.getElementById('status').style.display = 'block';
+        // 注意：原 #status 元素在改为"上下身份栏"后已删除，这里不能再访问它
+        //（getElementById 返回 null 会抛错，导致 checkSavedGame() 永远执行不到，
+        //  "恢复刚才断线的对局"按钮就永远不显示）
         checkSavedGame();
     }
 </script>

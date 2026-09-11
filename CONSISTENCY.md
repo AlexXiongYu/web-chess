@@ -21,7 +21,13 @@
 | 房间号生成 | `floor(1000+rand*9000)` → 4位 | 同左 |
 | channel | `= roomId` | 同左 |
 | 消息协议 | move/sync/request_sync/request_undo/agree_undo/reject_undo/request_restart/agree_restart/reject_restart/emoji/room_check/room_info/spectator_joined/spectator_left | 同左 |
-| 消息字段 | `{sender, fen, pgn, moveInfo, identity, value}` | 同左 |
+| 消息字段 | `{sender, target, fen, pgn, moveInfo, identity, value, color}` | 同左 |
+| 收件人字段 `target` | 悔棋/重开全系列**必带**（=对方颜色）；非收件人忽略；老版本无 target 时按老逻辑兜底 | 同左 |
+| 观战者权限 | 只读：收到 request_undo/agree_undo/reject_undo/request_restart/agree_restart/reject_restart 一律忽略；**发送端白名单**只允许 request_sync / spectator_joined / spectator_left / room_check / room_info / emoji | 同左 |
+| request_sync 应答 | 只有对弈者应答，观战者不应答（避免用过期棋局覆盖对局） | 同左 |
+| 观战者身份栏 | 上=黑方、下=白方，显示双方真实身份（按白方视角看棋盘） | 同左 |
+| 悔棋请求超时 | 20s 未收到应答自动取消并复位按钮 | 同左 |
+| 交叉悔棋 | 自己正在等应答时收到对方请求 → 直接回 reject，避免双方交叉撤销 | 同左 |
 | 回声过滤 | `data.sender === myColor` 丢弃 | 同左 |
 | 走子同步 | `load_pgn(pgn)` 否则 `load(fen)` | 同左 |
 | 悔棋步数 | 联网局=2 / 单机局=1；自己回合且 history<2 禁止 | 同左 |
@@ -144,7 +150,60 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 
 ---
 
-## 五、同步开发约定（防漂移）
+## 五、观战者权限模型（v1.2.6 新增，两端同构）
+
+### 5.1 问题
+
+房间就是 GoEasy 的一个频道，**白方、黑方、观战者都收到全部消息** —— 协议层没有"私聊"。
+于是出现了三类越权（都不是显示问题，是逻辑缺陷）：
+
+| # | 缺陷 | 后果 |
+|---|------|------|
+| 1 | 悔棋/重开请求是广播的，观战者也会收到并弹出"是否同意" | 观战者能同意/拒绝别人的对局操作 |
+| 2 | `agree_undo` / `agree_restart` 也是广播的，观战者收到后会执行 `executeUndo()` / `executeRestart()` | 观战者本地棋局被改写 |
+| 3 | 观战者执行后会继续 `broadcast({type:'sync'})`，而它手上**不是权威棋局** | **观战者能用自己的棋局覆盖整局对局**（越权最严重的一条） |
+
+另外 `request_sync` 的应答没有做身份限制，观战者也会应答，同样会用过期棋局污染对局。
+
+### 5.2 规则（两端必须逐条实现）
+
+1. **发送端白名单**：`isSpectator` 时只允许发
+   `request_sync` / `spectator_joined` / `spectator_left` / `room_check` / `room_info` / `emoji`；
+   其余（`move` / `sync` / `request_undo` / `agree_undo` / `reject_undo` / `request_restart` / `agree_restart` / `reject_restart`）
+   **在 broadcast 出口直接拦截**。这是最关键的一道闸 —— 即使 UI 有疏漏也污染不了对局。
+2. **接收端忽略**：`isSpectator` 时收到 `PLAYER_ONLY_RECV` 那 6 种消息**立即 return**（不弹窗、不执行）。
+3. **收件人校验**：悔棋/重开全系列带 `target`（= 对方颜色）。
+   接收方 `if (data.target && data.target !== myColor) return`。
+   不带 `target` 视为老版本发的，按老逻辑处理 → **新旧版本可混用**。
+4. **只有对弈者应答 `request_sync`**。
+5. **动作层双保险**：`executeUndo()` / `executeRestart()` 开头 `if (isSpectator) return`。
+6. **观战者身份栏**：观战者不是对局方，上下两栏显示白方/黑方**真实身份**
+   （身份通过收到的 `move`/`sync`/`request_sync`/`room_info` 里的 `sender` + `identity` 记录）。
+   观战者按白方视角看棋盘 → 上=黑方、下=白方。
+
+### 5.3 顺带修掉的同类缺陷
+
+| 缺陷 | 表现 | 修法 |
+|------|------|------|
+| 悔棋请求无超时 | 对方掉线时不回，请求方永远卡在「⏳ 等待同意」 | 20s 定时器自动取消并复位 |
+| 双方同时请求悔棋 | 两边都在 pending，交叉 `agree` 后撤销步数错乱 | 自己 pending 时收到对方请求 → 直接回 `reject` |
+| `load_pgn` / `load` 无保护 | 对端发来残缺 fen/pgn 时抛错，整条消息链中断 | try/catch，失败只跳过这一条 |
+| 观战者收到走子会振动 | 只读方不该产生走子反馈 | 观战者只刷新棋盘 |
+| 网页版 `#status` 元素已删但代码仍在写它 | `getElementById` 返回 null → `TypeError`。**`requestUndo`/`requestRestart` 在 broadcast 之前抛错 → 悔棋/重开请求根本发不出去**；`window.onload` 里同样抛错 → `checkSavedGame()` 执行不到 → 「恢复刚才断线的对局」按钮永不显示 | 移除全部 `#status` 访问 |
+
+### 5.4 回归验证
+
+两端各有一份 Node 探针，**改协议后必须跑过**：
+
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（30 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/对弈者回归）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（14 项，同一批场景）
+
+做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
+或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有弹窗 / 有没有 publish / 棋局 fen 变没变"。
+
+---
+
+## 六、同步开发约定（防漂移）
 
 - 改 appkey / host / 房间号规则 / 任一消息 type 或字段 → **两边必须同步改**，并同步更新本文件与 README。
 - 新增交互（如新消息类型、新按钮）→ 先定协议，再各自实现，附跨端自测（网页建房↔小程序加入）。
