@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
+    <!--
+      版本: 1.1.5 | 最后更新: 2026-09-11
+      变更:
+        v1.1.5 - 修复第二个人被误判为观战的 bug
+        v1.1.4 - 新增观战模式 + 房满检查 + 自定义身份
+        v1.1.3 - 清理开发期调试代码
+        v1.1.2 - 增加转发分享权限
+        v1.1.1 - 原生小程序移植 + GoEasy 实时联机 + 离线同屏兜底
+      协议版本与小程序端一致，消息 type / 字段 / appkey / host 同步维护。
+    -->
     <style>
         body { font-family: "Microsoft YaHei", sans-serif; text-align: center; background-color: #f4f4f4; margin: 0; padding: 10px; user-select: none; overflow-x: hidden; }
         .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
@@ -517,7 +527,7 @@
                 }
 
                 // ===== 房满检查：响应新人的 room_check =====
-                if(data.type === 'room_check' && currentRoom) {
+                if(data.type === 'room_check' && currentRoom && !_checkingRoom) {
                     broadcast({ type: 'room_info', color: isSpectator ? 'spectator' : myColor, identity: myIdentity });
                 }
                 // ===== 房满检查：收集 room_info 回复 =====
