@@ -1090,8 +1090,16 @@
 
         if (game.game_over()) {
             if (game.in_checkmate()) {
-                var turnColor = game.turn() === 'w' ? 'white' : 'black';
-                var winnerName = (turnColor === myColor) ? oppIdentity : myIdentity;
+                // game.turn() 是"该走但已被将死"的一方；胜者是另一方
+                var loserColor = game.turn() === 'w' ? 'white' : 'black';
+                var winnerColor = loserColor === 'white' ? 'black' : 'white';
+                var winnerName;
+                if (isSpectator) {
+                    // 观战者自己不是对局方，用记录的双方身份；否则会把观战者的名字当冠军
+                    winnerName = _playerIdentities[winnerColor] || (winnerColor === 'white' ? '白方' : '黑方');
+                } else {
+                    winnerName = (winnerColor === myColor) ? myIdentity : oppIdentity;
+                }
                 overlay.innerHTML = `🎉 将杀！<br><span style="font-size:36px; margin-top:10px;">${winnerName} 获胜！</span>`;
             } else {
                 overlay.innerHTML = `🤝 游戏平局`;
