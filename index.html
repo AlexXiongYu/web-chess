@@ -5,14 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.3.5 | 最后更新: 2026-09-12
+      版本: 1.3.6 | 最后更新: 2026-09-12
       变更:
+        v1.3.6 - 两端：①【用户反馈 bug】网页端身份面板点过「自定义...」后，再改点预设身份
+                 输入框不消失，导致只能以自定义身份加入。根因：自定义行 role-picker-custom-row
+                 位于 role-picker-list 之外，renderRolePicker() 只重建列表不碰它；预设选项的
+                 onclick 未显式收起 → confirmRolePicker() 仍按"自定义"分支校验 → 卡在
+                 「请输入自定义名称」。修复：预设 onclick 显式收起 + renderRolePicker 末尾
+                 加收敛兜底（选中预设即收起）。小程序端无此问题（onRolePickerSelect 有
+                 setData({showCustomInput:false})）。
+                 ②【在线维持】掉线方座位不再被静默接手。此前只有观战者离开会广播，
+                 对弈者掉线完全静默；doJoinRoom 又只看 _roomColors（掉线方不会应答
+                 room_info）→ 掉线方座位被当成空位，新人进房可直接接手残局。
+                 现在引入「座位租约」：对弈者每 5s 广播 ping 续租，座位在 60s 宽限期内
+                 保持锁定；房主响应 room_check 时补发 seat_state 播报占用；
+                 doJoinRoom 改为两路信号取或（_roomColors || seatLocked）；
+                 非对局座位请求 sync 时先弹「有人想接手这局棋」确认面板，同意才发残局，
+                 拒绝则广播 reject_takeover、请求方转观战。
+                 心跳生命周期：visibilitychange（对应小程序 onShow/onHide）+
+                 beforeunload / leaveRoom 停止；换房间时清空租约防跨房间泄漏。
         v1.3.5 - 两端：结局覆盖层改为半透明（底色 alpha 0.68，主题色也用 rgba 渐变），
                  终局时仍能看清最后一步棋的盘面；文字改用白色光晕（text-shadow）
                  保证在深浅棋盘格上都清晰。
-                 去掉轮次提示里重复的 ::before 脉冲圆点 —— 玩家名里已内嵌 ●/○ 回合标记，
-                 两者叠加会变成"两个符号"。动画改为作用在既有 ●/○ 上（turnDot 呼吸，
-                 幅度收敛到 scale 1.12，不再过冲）。
+                 去掉身份栏名字里重复的 ●/○ 回合标记 —— 保留 .active-turn 的 ::before
+                 脉冲圆点作为唯一的轮次指示（脉冲幅度 scale 1.55，足够醒目），
+                 避免"圆点 + ●/○"两个符号叠在一起。render()/buildSpectatorBars() 里
+                 拼接 oppDot/myDot/topDot/botDot 的代码已一并删除。
         v1.3.4 - 网页端：修复表情面板点开后上半部分被遮住 —— 根因是 #game-controls 用了
                  overflow-x:auto，绝对定位的 #emoji-panel 被这个滚动容器裁掉。
                  改为 overflow:visible + flex-wrap:wrap，并给面板加视口避让
@@ -227,10 +245,9 @@
 
         /* 身份栏 */
         .player-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; margin: 4px 0; border-radius: 6px; background: #f8f9fa; min-height: 36px; position: relative; overflow: hidden; }
-        /* 轮次提示（Task 7 修订）：原来的浅绿底色太不显眼 —— 用「流动渐变 + 高光扫过」两重动效。
-           注意：不要再额外加 ::before 脉冲圆点 —— 名字文本里已经有 ●/○ 回合标记
-           （buildPlayerBars 写入的 oppDot/myDot），两者叠在一起会变成重复符号。
-           动画统一作用在既有的 ●/○ 上（见下面 .active-turn .player-name 的 span 规则）。 */
+        /* 轮次提示（Task 7 修订）：原来的浅绿底色太不显眼 —— 用「流动渐变 + 高光扫过 + 左侧脉冲点」三重动效。
+           注意：名字文本里**不能**再内嵌 ●/○ 回合标记 —— 会和左侧脉冲点重复成两个符号。
+           轮次只由「脉冲点 + 底色」表达（见下面 .active-turn .player-name::before）。 */
         .player-bar.active-turn {
             background: linear-gradient(90deg, #d9f7e2 0%, #a8e9bd 25%, #d9f7e2 50%, #a8e9bd 75%, #d9f7e2 100%);
             background-size: 300% 100%;
@@ -242,8 +259,13 @@
             background: linear-gradient(105deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.75) 50%, rgba(255,255,255,0) 100%);
             pointer-events: none; animation: turnSweep 2.2s ease-in-out infinite;
         }
-        /* 让既有的回合标记（●/○）本身呼吸，替代原来的重复圆点 */
-        .player-bar.active-turn .player-name { animation: turnDot 1.1s ease-in-out infinite; }
+        /* 左侧脉冲小圆点：呼吸式缩放，兼顾色弱用户（不依赖颜色也能看出该谁走）。
+           这是轮次提示唯一的"点"，名字里不再有 ●/○。 */
+        .player-bar.active-turn .player-name::before {
+            content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 5px;
+            border-radius: 50%; background: #1fa84c; vertical-align: middle;
+            animation: turnDot 1.1s ease-in-out infinite;
+        }
         @keyframes turnFlow { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
         @keyframes turnSweep { 0% { left: -60%; } 55%, 100% { left: 130%; } }
         @keyframes turnPulse {
@@ -252,7 +274,7 @@
         }
         @keyframes turnDot {
             0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.12); opacity: 0.72; }
+            50% { transform: scale(1.55); opacity: 0.55; }
         }
         .player-name { font-size: 14px; font-weight: bold; color: #444; white-space: nowrap; }
         .captured-row { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
@@ -491,13 +513,23 @@
     // 观战者用：记录白方/黑方的真实身份
     var _playerIdentities = {};
 
+    // ===== 座位租约（v1.3.6）：在线维持 =====
+    // 背景：掉线方不会应答 room_check，此前 doJoinRoom 只看 _roomColors 就会把他的座位
+    // 当成空位，让新人进来直接接手残局。现在改用"心跳租约"：每个座位定期 ping 续租，
+    // 对方据此判定"这个位子还有人"，宽限期内不许别人占。
+    var _seatLastSeen = {};          // { white|black|spectator: 最后活跃时间戳 }
+    var _heartbeatTimer = null;
+    var _seatSweepTimer = null;
+    var _seatExpiredNotified = {};   // 每个座位"掉线提示"只发一次，避免刷屏
+
     // 版本号：页面角落展示，改版本时同步改这里 + 头部注释 + 小程序 index.js
-    var APP_VERSION = '1.3.5';
+    var APP_VERSION = '1.3.6';
 
     // ===== 观战者权限（与小程序端同步维护，详见 docs/CONSISTENCY.md）=====
     // 房间是 GoEasy 的一个频道，白方/黑方/观战者都收到全部消息，
     // "谁有权处理哪条消息"必须由客户端自己把关。
-    var SPECTATOR_ALLOWED_SEND = ['request_sync', 'spectator_joined', 'spectator_left', 'room_check', 'room_info', 'emoji'];
+    // v1.3.6 追加 'ping'：观战者也要续租自己的 spectator 座位（房主据此知道观战者还在）
+    var SPECTATOR_ALLOWED_SEND = ['request_sync', 'spectator_joined', 'spectator_left', 'room_check', 'room_info', 'emoji', 'ping'];
     var PLAYER_ONLY_RECV = ['request_undo', 'agree_undo', 'reject_undo', 'request_restart', 'agree_restart', 'reject_restart'];
     var UNDO_REQ_TIMEOUT = 20000;
     // 页内确认面板自动关闭时间：无人应答时必须自己退场，否则棋盘被永久冻结
@@ -507,6 +539,12 @@
     // 这段时间用于判断"有空位 / 已满(转观战)"；身份选择面板要等它结束才弹，
     // 因为"哪些身份已被占"依赖这段时间收到的 room_info / room_check。
     var ROOM_CHECK_MS = 3000;
+    // 心跳间隔（毫秒）：对弈者每隔这么久广播一次 ping，告诉房间里其他人"这个座位还有人"。
+    // 这解决的是根问题 —— 此前**只有观战者离开会广播**，对弈者掉线是完全静默的。
+    var HEARTBEAT_MS = 5000;
+    // 座位宽限期（毫秒）：最后一次听到某座位消息后，该座位在这段时间内保持**锁定**。
+    // 掉线方在宽限期内回来可无缝续棋；期间新人进房只能观战，**不许接手残局**。
+    var SEAT_GRACE_MS = 60000;
 
     function initGoEasy() {
         if (!goeasy) {
@@ -542,8 +580,27 @@
         initGoEasy();
     }
 
+    // 回到前台：立刻续租一次（切后台期间心跳被暂停，回来要马上宣告"我在"），
+    // 并重启心跳。顺序很重要 —— 先续租再重启，避免被误判为掉线。
+    // （对应小程序的 onShow / onHide，浏览器里用 visibilitychange 等价表达。）
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+            if (currentRoom && isNetworkReady) {
+                if (isSpectator || !needIdentityPick) {
+                    broadcast({ type: 'ping', seat: mySeat() });
+                }
+                if (!_heartbeatTimer) startHeartbeat();
+            }
+        } else {
+            // 切后台：暂停心跳。注意这里**不广播"我走了"** —— 切后台可能只是切标签页，
+            // 位子要保留，靠对方那边的宽限期兜住；真掉线则宽限期过后自动释放。
+            stopHeartbeat();
+        }
+    });
+
     window.addEventListener('beforeunload', function() {
         // 离开页面：清掉所有定时器与页内提示状态，避免残留
+        stopHeartbeat();
         if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
         if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
         if (_noticeTimer) { clearTimeout(_noticeTimer); _noticeTimer = null; }
@@ -578,6 +635,64 @@
     // ==========================================
     // 3. 房间管理与持久化
     // ==========================================
+    // ====== 座位租约（v1.3.6）======
+    // 我的座位号（用于续租/判断自己是否被抢）。观战者不算座位。
+    function mySeat() {
+        return isSpectator ? 'spectator' : myColor;
+    }
+
+    // 收到来自某座位的任何消息 → 刷新它的租约（"他还在"）。
+    function touchSeat(color) {
+        if (color !== 'white' && color !== 'black' && color !== 'spectator') return;
+        _seatLastSeen[color] = Date.now();
+        // 该座位重新活跃 → 允许下次掉线再提示一遍
+        if (_seatExpiredNotified[color]) _seatExpiredNotified[color] = false;
+    }
+
+    // 某座位当前是否处于宽限期内（= 锁定，别人不能占）
+    function seatLocked(color) {
+        var t = _seatLastSeen[color];
+        if (!t) return false;
+        return (Date.now() - t) < SEAT_GRACE_MS;
+    }
+
+    // 某座位是否已过期（曾经有过、但超过宽限期没消息）
+    function seatExpired(color) {
+        var t = _seatLastSeen[color];
+        if (!t) return false;
+        return (Date.now() - t) >= SEAT_GRACE_MS;
+    }
+
+    // 开始心跳：对弈者每 HEARTBEAT_MS 给自己的座位续租一次。
+    // 观战者也发（用 spectator 座位），这样房主也能看到观战者是否还在。
+    function startHeartbeat() {
+        stopHeartbeat();
+        _heartbeatTimer = setInterval(function () {
+            if (!currentRoom || !isNetworkReady) return;
+            // 还没选身份时不代表任何座位，先不续租（避免用默认名字占了座位）
+            if (!isSpectator && needIdentityPick) return;
+            broadcast({ type: 'ping', seat: mySeat() });
+        }, HEARTBEAT_MS);
+        // 周期性巡检：把"刚过期"的座位提示一次（只在房内提示，且每个座位只提示一次）
+        _seatSweepTimer = setInterval(function () {
+            if (!currentRoom) return;
+            ['white', 'black'].forEach(function (c) {
+                if (c === mySeat()) return;
+                if (seatExpired(c) && !_seatExpiredNotified[c]) {
+                    _seatExpiredNotified[c] = true;
+                    var name = (_playerIdentities || {})[c] || (c === 'white' ? '白方' : '黑方');
+                    notice('⚠️ ' + name + ' 已掉线，座位保留中（' + Math.round(SEAT_GRACE_MS / 1000) + 's）', 4000);
+                }
+            });
+        }, 2000);
+    }
+
+    function stopHeartbeat() {
+        if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
+        if (_seatSweepTimer) { clearInterval(_seatSweepTimer); _seatSweepTimer = null; }
+    }
+
+
     function checkSavedGame() {
         var saved = localStorage.getItem('chessSave');
         if (saved) document.getElementById('resume-btn').style.display = 'inline-block';
@@ -589,6 +704,13 @@
     }
 
     // ===== 建房 / 加入：先订阅进房，再选身份 =====
+    // 换房间 = 换一批人，座位租约必须一并清空：否则上一个房间留下的租约会泄漏进来，
+    // 让新房间的空位被误判成"有人"（v1.3.6）
+    function resetSeatLease() {
+        _seatLastSeen = {};
+        _seatExpiredNotified = {};
+    }
+
     function createRoom() {
         initAudio();
         _rolePickIdx = 0;
@@ -599,6 +721,7 @@
         _claimAt = 0;
         _clashPeerNotified = false;
         isSpectator = false;
+        resetSeatLease();
         myColor = 'white';
         game.reset();
         localStorage.removeItem('chessSave');
@@ -638,6 +761,7 @@
         _claimAt = 0;
         _clashPeerNotified = false;
         isSpectator = false;
+        resetSeatLease();
         myColor = 'black';   // 先按黑方进房，房满检查结束后再按房间情况修正
         _checkingRoom = true;
         _roomColors = {};
@@ -670,8 +794,18 @@
         setTimeout(function() {
             if (!_checkingRoom) return;
             _checkingRoom = false;
-            var hasWhite = _roomColors['white'];
-            var hasBlack = _roomColors['black'];
+            // ===== 座位是否"有人"（v1.3.6）=====
+            // 关键修复：不能只看 _roomColors（= "他刚回了我 room_info"），
+            // 因为掉线方**不会应答** —— 只看它就会把掉线方的座位误判成空位、让新人接手残局。
+            // 现在改为两路信号取或：
+            //   ① _roomColors[color]  —— 他应了 room_check（在场且活跃）
+            //   ② seatLocked(color)   —— 他的座位仍在宽限期内（刚 ping 过 / 他的消息刚来过）
+            // 只有两条都不成立（从没出现过，或已超宽限期）才算真正空位。
+            var seatTaken = function (color) {
+                return !!_roomColors[color] || seatLocked(color);
+            };
+            var hasWhite = seatTaken('white');
+            var hasBlack = seatTaken('black');
             if (hasWhite && hasBlack) {
                 // 房间已满 → 观战（只读）
                 isSpectator = true;
@@ -688,6 +822,8 @@
             game.reset();
             showGameUI(roomId);
             openRolePicker('join');
+            // 进房即开始心跳，让房间里其他人知道这个座位被占了（租约从此刻起算）
+            if (currentRoom) startHeartbeat();
         }, ROOM_CHECK_MS);
     }
 
@@ -731,6 +867,8 @@
         document.getElementById('room-tip').innerText = "断线重连成功";
         showGameUI(currentRoom);
         connectRoom(currentRoom);
+        // 重连后立刻恢复心跳，否则自己会被对方当成"掉线"（v1.3.6）
+        startHeartbeat();
     }
 
     function showGameUI(roomId) {
@@ -777,7 +915,14 @@
             if (!taken) {
                 (function (idx) {
                     div.setAttribute('data-idx', idx);
-                    div.onclick = function () { _rolePickIdx = idx; renderRolePicker(); };
+                    div.onclick = function () {
+                        _rolePickIdx = idx;
+                        // 重选预设身份时必须收起自定义输入行：自定义行在列表之外，
+                        // renderRolePicker() 不负责它，不显式收起会导致 confirmRolePicker()
+                        // 仍走"自定义"分支 → 卡在"请输入自定义名称"（v1.3.6 修复）
+                        document.getElementById('role-picker-custom-row').style.display = 'none';
+                        renderRolePicker();
+                    };
                 })(i);
             }
             listEl.appendChild(div);
@@ -791,6 +936,11 @@
             document.getElementById('role-picker-custom-row').style.display = 'flex';
         };
         listEl.appendChild(custDiv);
+        // 收敛兜底：所有重绘路径的最后一道防线 —— 只要选中的是预设身份（>=0），
+        // 自定义输入行一律收起。防止将来新增调用路径又忘了同步 display（v1.3.6）
+        if (_rolePickIdx != null && _rolePickIdx >= 0) {
+            document.getElementById('role-picker-custom-row').style.display = 'none';
+        }
     }
 
     function openRolePicker(mode) {
@@ -934,6 +1084,9 @@
 
     // 退出房间：退订频道 + 复位房间相关的全部状态，回到开局设置面板
     function leaveRoom() {
+        stopHeartbeat();
+        _seatLastSeen = {};
+        _seatExpiredNotified = {};
         if (isSpectator && currentRoom) {
             broadcast({ type: 'spectator_left', identity: myIdentity });
         }
@@ -993,6 +1146,16 @@
                     opponentJoined = true;
                 }
 
+                // ===== 座位续租（v1.3.6）：任何来自某座位的消息都算"他还在" =====
+                // 注意用 data.sender 而不是 data.seat：sender 是 broadcast() 统一注入的，
+                // 老版本消息也带它，所以对旧版对端同样能续租（向后兼容）。
+                touchSeat(data.sender);
+                // ping：纯续租消息，不参与任何对局逻辑
+                if (data.type === 'ping') {
+                    if (data.seat) touchSeat(data.seat);
+                    return;
+                }
+
                 // ===== 权限守卫 =====
                 // 观战者只读：悔棋/重开全系列一概不处理（观战者无权同意或拒绝）
                 if (isSpectator && PLAYER_ONLY_RECV.indexOf(data.type) > -1) return;
@@ -1033,8 +1196,41 @@
                     if (!isSpectator && data.identity) oppIdentity = data.identity;
                     // 观战者手上不是权威棋局，绝不能回应 sync（否则会用自己的棋局覆盖对局）
                     if (isSpectator) return;
+                    // ===== 残局接手守卫（v1.3.6）=====
+                    // 危险场景：对弈方掉线 → 新人进房 → 新人发 request_sync → 我把整盘残局发过去
+                    // → 新人直接顶替掉那位子。残局是"有人正在下"的状态，不该被静默继承。
+                    // 规则：只有当请求方**就是我当前对手那个座位**时才无条件回；
+                    //       否则说明他占的是另一个座位（= 原对弈方的位子空出来了），
+                    //       必须由我（房间里仍在线的对弈方）明确确认后才回残局。
+                    var requesterSeat = data.sender;
+                    var iAmPlayer = !isSpectator;
+                    var reqIsMyOpponent = iAmPlayer && requesterSeat && requesterSeat === oppColor();
+                    var hasHistory = game.history && game.history().length > 0;
+                    if (iAmPlayer && hasHistory && !reqIsMyOpponent && needIdentityPick !== true) {
+                        // 有残局、且请求方不是我的对手 → 先问房主（= 我）
+                        showPrompt({
+                            mode: 'recv-takeover',
+                            sender: requesterSeat,
+                            title: '有人想接手这局棋',
+                            text: '对方座位已空出，新的对弈者想接手当前残局（' + game.history().length + ' 步）。同意后由他继续下。',
+                            confirmText: '同意接手',
+                            cancelText: '拒绝'
+                        });
+                        return;
+                    }
                     updateStatusText();
                     broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
+                }
+                // 被拒绝接手：明确提示，避免新人对着空盘干等
+                if(data.type === 'reject_takeover') {
+                    if (data.target && data.target !== myColor) return;
+                    notice('房主未同意你接手这局棋，已转为观战', 3500);
+                    if (!isSpectator && game.history && game.history().length === 0) {
+                        isSpectator = true;
+                        myColor = 'spectator';
+                        document.getElementById('room-tip').innerText = "观战中（只读）";
+                        updateBoardState();
+                    }
                 }
 
                 // ===== 房满检查：响应新人的 room_check =====
@@ -1042,6 +1238,26 @@
                     // 还没选身份时不报"默认名字"：否则会把脚手架名字当成真实身份传给对方，
                     // 污染对方的"已被占用"列表。房满判定只看 color，与 identity 无关。
                     broadcast({ type: 'room_info', color: isSpectator ? 'spectator' : myColor, identity: needIdentityPick ? '' : myIdentity });
+                    // 座位锁定播报（v1.3.6）：告诉新人"哪些座位还有人（哪怕他暂时没说话）"。
+                    // 单独发一条，避免污染 room_info 的既有语义（老版本对端会忽略未知 type）。
+                    var lockedSeats = ['white', 'black'].filter(function (c) {
+                        return c !== mySeat() && seatLocked(c);
+                    });
+                    var expiredSeats = ['white', 'black'].filter(function (c) {
+                        return c !== mySeat() && seatExpired(c);
+                    });
+                    broadcast({ type: 'seat_state', locked: lockedSeats, expired: expiredSeats });
+                }
+                // ===== seat_state：座位占用播报（v1.3.6）=====
+                // 新人据此判定"哪些座位有人"，这是 room_info 之外的关键补充信号
+                if(data.type === 'seat_state') {
+                    (data.locked || []).forEach(function (c) {
+                        if (!seatLocked(c)) _seatLastSeen[c] = Date.now();
+                    });
+                    (data.expired || []).forEach(function (c) {
+                        _seatLastSeen[c] = Date.now() - SEAT_GRACE_MS - 1;
+                    });
+                    touchSeat(data.sender);
                 }
                 // ===== room_info：(a) 房满检查的应答  (b) 对方身份同步 =====
                 if(data.type === 'room_info') {
@@ -1231,6 +1447,17 @@
             startRestartTimer();
         } else if (mode === 'solo-restart') {
             if (ok) executeRestart();
+        } else if (mode === 'recv-takeover') {
+            // 残局接手确认（v1.3.6）：同意才把残局发过去，拒绝则明确告知对方
+            if (ok) {
+                broadcast({ type: 'sync', fen: game.fen(), pgn: game.pgn(), identity: myIdentity });
+                // 对方接手成功 → 该座位从现在起归他续租
+                if (sender) touchSeat(sender);
+                notice('已同意对方接手残局', 2500);
+            } else {
+                broadcast({ type: 'reject_takeover', target: sender });
+                notice('已拒绝对方接手残局', 2500);
+            }
         }
     }
 
@@ -1440,11 +1667,9 @@
         var gameOver = game.game_over();
         var oppCap = buildCapturedDisplay(isWhite ? 'b' : 'w');
         var myCap = buildCapturedDisplay(isWhite ? 'w' : 'b');
-        var oppDot = gameOver ? '⚫' : (curTurn === oppColor ? '●' : '○');
-        var myDot = gameOver ? '⚫' : (curTurn === myColor ? '●' : '○');
-
-        document.getElementById('top-player-name').innerText = oppDot + ' ' + oppName;
-        document.getElementById('bottom-player-name').innerText = myDot + ' ' + myName;
+        // 回合标记不再内嵌进名字：轮次统一由身份栏的「脉冲点 + 流动底色」表达
+        document.getElementById('top-player-name').innerText = oppName;
+        document.getElementById('bottom-player-name').innerText = myName;
 
         var topRow = document.getElementById('top-captured');
         topRow.innerHTML = '';
@@ -1471,11 +1696,9 @@
     function buildSpectatorBars() {
         var curTurn = game.turn() === 'w' ? 'white' : 'black';
         var gameOver = game.game_over();
-        var topDot = gameOver ? '⚫' : (curTurn === 'black' ? '●' : '○');
-        var botDot = gameOver ? '⚫' : (curTurn === 'white' ? '●' : '○');
-
-        document.getElementById('top-player-name').innerText = topDot + ' ' + (_playerIdentities.black || '黑方');
-        document.getElementById('bottom-player-name').innerText = botDot + ' ' + (_playerIdentities.white || '白方');
+        // 同 buildPlayerBars：回合标记不内嵌进名字，轮次只由脉冲点表达
+        document.getElementById('top-player-name').innerText = (_playerIdentities.black || '黑方');
+        document.getElementById('bottom-player-name').innerText = (_playerIdentities.white || '白方');
 
         setCapturedRow('top-captured', buildCapturedDisplay('b'));
         setCapturedRow('bottom-captured', buildCapturedDisplay('w'));

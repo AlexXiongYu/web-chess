@@ -42,7 +42,7 @@
 | 身份选择时机 | **进房后**再选（`needIdentityPick`），面板标"已被选"且禁选已占用 | 同左，见第八节 |
 | 空房落子守卫 | 在线模式未收到对方颜色消息前不许落子（`opponentJoined`） | 同左，见第八节 |
 | 取消选身份 | = 退出房间（广播 `spectator_left` + `unsubscribe`） | 同左 |
-| 版本号展示 | 页面右下角灰色小字 `v1.3.5`（`APP_VERSION`） | 同左（`version` 字段绑定） |
+| 版本号展示 | 页面右下角灰色小字 `v1.3.6`（`APP_VERSION`） | 同左（`version` 字段绑定） |
 | GoEasy 实例 | 模块级单例，`initGoEasy()` 只建一次（`_goeasySingleton`） | 同左；另有 `_goeasyConnected` 记录连接态（见 5.3） |
 | 结局提示 | 观战者沿用「某某获胜」；对局者改为「你赢了 / 你输了」+ 配色类；**覆盖层半透明**（alpha 0.68，不糊棋盘） | 同左，见 5.3 |
 | 轮次提示 | `active-turn` 带渐变流动 + 扫光；动画作用在既有 ●/○ 上（**不得**再加 `::before` 圆点） | 同左 |
@@ -202,14 +202,16 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 | **小程序加入房间永久卡在「正在检查房间…」（v1.3.4）** | GoEasy SDK 是**模块级单例**：`getInstance()` 内部走 `init()`，而 `init()` 在"已连接"状态下抛 `Initialization failed. Please disconnect and try again.`。小程序页面共享同一 JS 上下文，故**第二次进页面**必然抛错。旧代码 `onLoad` 每次 `this.goeasy = null` 后重建实例 → `onLoad` 在 `initGoEasy()` 处中断：`connectState` 永远 `idle` → 点「加入房间」落进 `pendingJoin` → 又 `initGoEasy()` → 又抛错 → `roomTip` 永久卡住。**建房看似正常，只因 `doCreateRoom()` 的身份面板不等连接就弹，属巧合掩盖**；点分享卡片（新开页面实例）则必然踩中 | 实例提到模块作用域只建一次（`_goeasySingleton`）+ `_goeasyConnected` 记录连接态；`connectRoom` 改为先 `unsubscribe` 再 `subscribe`，保证回调绑定当前实例且不重复登记 |
 | **表情面板点开后上半部分被遮住（v1.3.4，网页端）** | `#game-controls` 用了 `overflow-x: auto`，绝对定位的 `#emoji-panel`（`position:absolute`）被这个滚动容器裁掉 | `#game-controls` 改 `overflow: visible` + `flex-wrap: wrap`；面板加 `clampEmojiPanel()` 视口避让（窄屏也不切图） |
 | **将杀结局覆盖层完全糊住棋盘（v1.3.5）** | 结局层底色 `rgba(255,255,255,0.9)`、胜负主题色用**不透明 hex 渐变** → 终局后完全看不到最后一步棋的盘面，等于把"怎么被将死的"藏起来了 | 底色降到 alpha 0.68，胜负/平局主题色一律改 **rgba 半透明渐变**（0.70→0.76）；文字改用**白色光晕** `text-shadow` 保证在深浅格上都可读 |
-| **轮次动画与既有 ●/○ 标记重复（v1.3.5）** | 玩家名文本里已内嵌回合标记（`render()` 写入 `oppDot`/`myDot`：`●` 该走 / `○` 待走），Task 7 又额外加了 `.active-turn .player-name::before` 脉冲圆点 → 同一行出现**两个符号** | 删掉 `::before` 圆点，把呼吸动画改作用在**既有 ●/○ 本身**（`.active-turn .player-name { animation: turnDot }`），并把幅度从 `scale(1.55)` 收敛到 `1.12` 避免过冲 |
+| **轮次动画与既有 ●/○ 标记重复（v1.3.5）** | 玩家名文本里已内嵌回合标记（`render()` 写入 `oppDot`/`myDot`：`●` 该走 / `○` 待走），又额外加了 `.active-turn .player-name::before` 脉冲圆点 → 同一行出现**两个符号** | 删掉名字里的 ●/○（及 `oppDot`/`myDot`/`topDot`/`botDot` 变量），**保留** `::before` 脉冲圆点作为唯一轮次指示，幅度 `scale(1.55)` 保证可见 |
+| **掉线方座位被静默接手（v1.3.6，用户实测）** | 只有观战者离开会广播，**对弈者掉线完全静默**；`doJoinRoom` 又只看 `_roomColors`（掉线方不会应答 `room_info`）→ 掉线方座位被判成空位；新人进房发 `request_sync` 就拿到整盘残局，直接顶替那位子 | 座位租约：5s 心跳 `ping` 续租 + 60s 宽限期锁定；`room_check` 应答补发 `seat_state`；空位判定改两路取或；非对局座位请求 `sync` 先弹接手确认面板，拒绝则 `reject_takeover` → 请求方转观战 |
+| **网页端身份面板自定义输入行不随选项收起（v1.3.6，用户实测）** | 点过「自定义...」后再改点预设身份，输入框不消失 → `confirmRolePicker()` 仍走"自定义"分支 → 卡在「请输入自定义名称」，只能以自定义身份加入。小程序端无此问题 | 预设选项 onclick 显式 `display='none'`；`renderRolePicker()` 末尾加收敛兜底（`_rolePickIdx>=0` 即收起） |
 
 ### 5.4 回归验证
 
 两端各有一份 Node 探针，**改协议后必须跑过**：
 
-- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（123 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归/**GoEasy单例复用**/**分享卡片自动进房**/**结局输赢配色**/**覆盖层半透明**/**轮次动画不重复**）
-- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（87 项，同一批场景 + **表情面板不裁切**/**结局配色**/**回合动画**/**覆盖层透明度**/**无重复圆点**）
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（146 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归/**GoEasy单例复用**/**分享卡片自动进房**/**结局输赢配色**/**覆盖层半透明**/**轮次动画不重复**/**座位租约与残局接手守卫**）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（110 项，同一批场景 + **表情面板不裁切**/**结局配色**/**回合动画**/**覆盖层透明度**/**无重复圆点**/**身份面板自定义行收起**/**座位租约**）
 
 做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
 或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有提示 / 有没有 publish / 棋局 fen 变没变"。
@@ -352,7 +354,73 @@ v1.2.5～v1.3.0 的流程是 **先选身份 → 再进房**（`createRoom()`/`jo
 
 ---
 
-## 九、同步开发约定（防漂移）
+## 九、座位租约与在线维持（v1.3.6 新增，两端同构）
+
+### 9.1 问题（用户实测发现）
+
+> 「我发现掉线后别人再进房可以直接接手掉线那方的残局。」
+
+两个独立缺陷叠加：
+
+1. **掉线是静默的**：原先只有观战者离开会广播 `spectator_left`。**对弈者掉线没有任何信号**，
+   别人只能靠"他还说没说话"来猜。
+2. **空位判定只看一个信号**：`doJoinRoom` 用 `_roomColors[color]` 判空位，而它只在
+   "对方应答了 `room_check`"时才被填充。掉线方**不会应答** → 他的座位被判成空位。
+3. **残局可被静默继承**：新人随后发 `request_sync`，在位的那一方直接回整盘 pgn（含全部历史），
+   新人就顶上了那个座位。
+
+### 9.2 规则（两端必须逐条实现）
+
+| # | 规则 | 网页版 | 小程序版 |
+|---|------|--------|----------|
+| 1 | 心跳间隔 `HEARTBEAT_MS = 5000`，宽限期 `SEAT_GRACE_MS = 60000` | 同 | 同 |
+| 2 | 对弈者每 5s 广播 `{type:'ping', seat:mySeat()}` 续租 | `startHeartbeat()` | `_startHeartbeat()` |
+| 3 | **任何**来自某座位的消息都顺带续租 → `touchSeat(data.sender)` | ✓ | ✓ |
+| 4 | 收到 `ping` → 用 `data.seat` 再续一次，然后 `return`（不参与对局逻辑） | ✓ | ✓ |
+| 5 | `seatLocked(c)` = 最后活跃在 60s 内；`seatExpired(c)` = 超出 60s | ✓ | ✓ |
+| 6 | 响应 `room_check` 时**补发** `seat_state{locked,expired}` 播报占用 | ✓ | ✓ |
+| 7 | 收到 `seat_state` → 把 locked 记成"刚活跃"、expired 记成"已过期" | ✓ | ✓ |
+| 8 | `doJoinRoom` 空位判定改为两路取或：`_roomColors[c] \|\| seatLocked(c)` | ✓ | ✓ |
+| 9 | 非对局座位请求 `sync` 且本地有残局 → 弹 `recv-takeover` 确认面板，**不直接发残局** | ✓ | ✓ |
+| 10 | 同意 → 广播 `sync`；拒绝 → 广播 `reject_takeover{target}` | ✓ | ✓ |
+| 11 | 收到 `reject_takeover` → 请求方转为观战 | ✓ | ✓ |
+| 12 | `SPECTATOR_ALLOWED_SEND` 追加 `'ping'`（观战者也要能续租） | ✓ | ✓ |
+| 13 | 心跳生命周期：`visibilitychange` / `onShow`+`onHide`；`beforeunload`/`onUnload`/`leaveRoom` 停止 | ✓ | ✓ |
+| 14 | **换房间清空租约**（`resetSeatLease()` / `_resetSeatLease()`），防跨房间泄漏 | ✓ | ✓ |
+
+第 14 条是写断言时被探针挖出来的：`createRoom()/joinRoom()` 原先只清了 `_roomColors`，
+上一房间的 `_seatLastSeen` 会残留，把新房间的空位误判成"有人"（网页探针 W29g/W29h 因此失败）。
+
+### 9.3 为什么不用 GoEasy 原生 presence
+
+GoEasy SDK 确实有 `subscribePresence` / `hereNow` 和 `join`/`back`/`leave`/`timeout` 事件，
+但 `validateSubscribePresence` 要求 `connect()` 时显式传 `id`，且受套餐等级限制（免费套餐是否支持不确定）。
+改用客户端心跳租约：**可测试**（探针能直接驱动）、**两端对称**、**不依赖套餐**。
+
+### 9.4 网页端身份面板自定义输入行 bug（v1.3.6 顺带修复）
+
+用户反馈：网页端点过「自定义...」后，再改点预设身份，输入框不消失 → 只能以自定义身份加入；小程序端正常。
+
+根因：`role-picker-custom-row` 在 `role-picker-list` **之外**，`renderRolePicker()` 只重建列表、
+不碰它。预设选项的 `onclick` 未显式收起它 → `confirmRolePicker()` 里
+`customRow.style.display !== 'none'` 成立 → 走"自定义"分支 → `customIdentity` 为空 → 卡在
+「请输入自定义名称」。小程序端 `onRolePickerSelect` 有 `setData({showCustomInput:false})`，所以无此问题。
+
+修复两道：① 预设选项 onclick 显式 `display='none'`；② `renderRolePicker()` 末尾加**收敛兜底**
+（只要 `_rolePickIdx >= 0` 就收起），防将来新增调用路径再踩坑。
+
+### 9.5 回归验证
+
+| 探针 | 新增段 | 结果 |
+|------|--------|------|
+| 网页 `probe-web.js` | R1–R6（身份面板）+ N0–N10（座位租约） | **110/110** |
+| 小程序 `probe-index-page.js` | M1–M8e（座位租约） | **146/146** |
+
+反证（把 web 修复退回 bug 状态）：**R1/R2/R4/R6 四项 FAIL** —— 证明断言确实守住该 bug、非恒真。
+
+---
+
+## 十、同步开发约定（防漂移）
 
 - 改 appkey / host / 房间号规则 / 任一消息 type 或字段 → **两边必须同步改**，并同步更新本文件与 README。
 - 新增交互（如新消息类型、新按钮）→ 先定协议，再各自实现，附跨端自测（网页建房↔小程序加入）。
