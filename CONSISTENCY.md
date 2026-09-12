@@ -42,7 +42,7 @@
 | 身份选择时机 | **进房后**再选（`needIdentityPick`），面板标"已被选"且禁选已占用 | 同左，见第八节 |
 | 空房落子守卫 | 在线模式未收到对方颜色消息前不许落子（`opponentJoined`） | 同左，见第八节 |
 | 取消选身份 | = 退出房间（广播 `spectator_left` + `unsubscribe`） | 同左 |
-| 版本号展示 | 页面右下角灰色小字 `v1.3.6`（`APP_VERSION`） | 同左（`version` 字段绑定） |
+| 版本号展示 | 页面右下角灰色小字 `v1.3.7`（`APP_VERSION`） | 同左（`version` 字段绑定） |
 | GoEasy 实例 | 模块级单例，`initGoEasy()` 只建一次（`_goeasySingleton`） | 同左；另有 `_goeasyConnected` 记录连接态（见 5.3） |
 | 结局提示 | 观战者沿用「某某获胜」；对局者改为「你赢了 / 你输了」+ 配色类；**覆盖层半透明**（alpha 0.68，不糊棋盘） | 同左，见 5.3 |
 | 轮次提示 | `active-turn` 带渐变流动 + 扫光；动画作用在既有 ●/○ 上（**不得**再加 `::before` 圆点） | 同左 |
@@ -205,13 +205,14 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 | **轮次动画与既有 ●/○ 标记重复（v1.3.5）** | 玩家名文本里已内嵌回合标记（`render()` 写入 `oppDot`/`myDot`：`●` 该走 / `○` 待走），又额外加了 `.active-turn .player-name::before` 脉冲圆点 → 同一行出现**两个符号** | 删掉名字里的 ●/○（及 `oppDot`/`myDot`/`topDot`/`botDot` 变量），**保留** `::before` 脉冲圆点作为唯一轮次指示，幅度 `scale(1.55)` 保证可见 |
 | **掉线方座位被静默接手（v1.3.6，用户实测）** | 只有观战者离开会广播，**对弈者掉线完全静默**；`doJoinRoom` 又只看 `_roomColors`（掉线方不会应答 `room_info`）→ 掉线方座位被判成空位；新人进房发 `request_sync` 就拿到整盘残局，直接顶替那位子 | 座位租约：5s 心跳 `ping` 续租 + 60s 宽限期锁定；`room_check` 应答补发 `seat_state`；空位判定改两路取或；非对局座位请求 `sync` 先弹接手确认面板，拒绝则 `reject_takeover` → 请求方转观战 |
 | **网页端身份面板自定义输入行不随选项收起（v1.3.6，用户实测）** | 点过「自定义...」后再改点预设身份，输入框不消失 → `confirmRolePicker()` 仍走"自定义"分支 → 卡在「请输入自定义名称」，只能以自定义身份加入。小程序端无此问题 | 预设选项 onclick 显式 `display='none'`；`renderRolePicker()` 末尾加收敛兜底（`_rolePickIdx>=0` 即收起） |
+| **【P0】v1.3.6 座位租约把新人自己锁死 → 后进房直接变观战（用户实测）** | `joinRoom()` 先把 `myColor` 预设为 `'black'` → 新人广播 `room_check` 时 `sender='black'` → `room_check` 在回声过滤里被豁免，而 `touchSeat(data.sender)` 对它无条件生效 → 房主误以为黑座有人并通过 `seat_state` 回告 → 新人吃下后自己的黑座也被锁死 → `hasWhite && hasBlack` → 强制观战，**压根无法对局** | ① `touchSeat` 忽略**自己的座位**（自己在线由自己的心跳维护，不靠"收到自己的消息"续租）；② `room_check` 不参与续租（进房前探房消息，发送方还没决定座位，`sender` 只是脚手架值） |
 
 ### 5.4 回归验证
 
 两端各有一份 Node 探针，**改协议后必须跑过**：
 
-- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（146 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归/**GoEasy单例复用**/**分享卡片自动进房**/**结局输赢配色**/**覆盖层半透明**/**轮次动画不重复**/**座位租约与残局接手守卫**）
-- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（110 项，同一批场景 + **表情面板不裁切**/**结局配色**/**回合动画**/**覆盖层透明度**/**无重复圆点**/**身份面板自定义行收起**/**座位租约**）
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（152 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归/**GoEasy单例复用**/**分享卡片自动进房**/**结局输赢配色**/**覆盖层半透明**/**轮次动画不重复**/**座位租约与残局接手守卫**/**P0：新人不得被自己锁死**）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（116 项，同一批场景 + **表情面板不裁切**/**结局配色**/**回合动画**/**覆盖层透明度**/**无重复圆点**/**身份面板自定义行收起**/**座位租约**/**P0：新人不得被自己锁死**）
 
 做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
 或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有提示 / 有没有 publish / 棋局 fen 变没变"。
@@ -354,7 +355,7 @@ v1.2.5～v1.3.0 的流程是 **先选身份 → 再进房**（`createRoom()`/`jo
 
 ---
 
-## 九、座位租约与在线维持（v1.3.6 新增，两端同构）
+## 九、座位租约与在线维持（v1.3.6 新增，v1.3.7 修 P0，两端同构）
 
 ### 9.1 问题（用户实测发现）
 
@@ -375,7 +376,8 @@ v1.2.5～v1.3.0 的流程是 **先选身份 → 再进房**（`createRoom()`/`jo
 |---|------|--------|----------|
 | 1 | 心跳间隔 `HEARTBEAT_MS = 5000`，宽限期 `SEAT_GRACE_MS = 60000` | 同 | 同 |
 | 2 | 对弈者每 5s 广播 `{type:'ping', seat:mySeat()}` 续租 | `startHeartbeat()` | `_startHeartbeat()` |
-| 3 | **任何**来自某座位的消息都顺带续租 → `touchSeat(data.sender)` | ✓ | ✓ |
+| 3 | 任何来自某座位的消息都顺带续租 → `touchSeat(data.sender)`，但**必须忽略自己的座位**（v1.3.7） | ✓ | ✓ |
+| 3b | **`room_check` 不参与续租**（进房前探房消息，发送方尚未决定座位，`sender` 是脚手架值）（v1.3.7） | ✓ | ✓ |
 | 4 | 收到 `ping` → 用 `data.seat` 再续一次，然后 `return`（不参与对局逻辑） | ✓ | ✓ |
 | 5 | `seatLocked(c)` = 最后活跃在 60s 内；`seatExpired(c)` = 超出 60s | ✓ | ✓ |
 | 6 | 响应 `room_check` 时**补发** `seat_state{locked,expired}` 播报占用 | ✓ | ✓ |
@@ -409,14 +411,47 @@ GoEasy SDK 确实有 `subscribePresence` / `hereNow` 和 `join`/`back`/`leave`/`
 修复两道：① 预设选项 onclick 显式 `display='none'`；② `renderRolePicker()` 末尾加**收敛兜底**
 （只要 `_rolePickIdx >= 0` 就收起），防将来新增调用路径再踩坑。
 
-### 9.5 回归验证
+### 9.5 v1.3.7 P0 复盘：座位租约把新人自己锁死
+
+**用户实测**：
+
+> 「现在无法对局了，后进房选择身份直接观战了。」
+
+v1.3.6 刚上线的座位租约引入了**比原 bug 更严重**的回归 —— 原来只是"掉线后残局可能被接手"，
+现在变成"**正常对局根本开不起来**"。完整故障链：
+
+1. `joinRoom()` 会把 `myColor` **预设**为 `'black'`（等房况检查结束后才按实际情况修正）
+2. 新人广播 `room_check`，`broadcast()` 注入 `sender = myColor = 'black'`
+3. `room_check` 在回声过滤里被**豁免**（`data.type !== 'room_check'`），
+   而 v1.3.6 新加的 `touchSeat(data.sender)` 对它**无条件生效**
+4. 房主收到这条 `room_check` → `touchSeat('black')` → 误以为黑座有人
+   → 随后应答的 `seat_state` 把 `black` 报成 `locked`
+5. 新人吃下 `seat_state` → 自己的黑座也被锁死 → `hasWhite && hasBlack` → **强制观战**
+
+**教训：脚手架值泄漏成了协议信号。** `myColor` 在进房检查期间只是占位值，
+而 `broadcast()` 把它当真实座位号注入了每一条消息 —— 只要这条消息豁免了回声过滤，
+任何"收到消息就续租"的逻辑都会把自己洗成"占座"。
+
+**修复两处**（缺一不可）：
+
+| 修复 | 位置 | 理由 |
+|------|------|------|
+| `touchSeat` 忽略**自己的座位** | 两端 `touchSeat` / `_touchSeat` 首行 | 自己在线由自己的心跳维护，不靠"收到自己的消息"续租 |
+| `room_check` 不参与续租 | 两端 `onMessage` 的续租调用处 | 它是"进房前探房"消息，发送方还没决定座位，`sender` 只是脚手架值 |
+
+**验收**：空房 + 新人进房 → 黑座必须仍为空 → 新人作为对弈者加入。
+
+### 9.6 回归验证
 
 | 探针 | 新增段 | 结果 |
 |------|--------|------|
-| 网页 `probe-web.js` | R1–R6（身份面板）+ N0–N10（座位租约） | **110/110** |
-| 小程序 `probe-index-page.js` | M1–M8e（座位租约） | **146/146** |
+| 网页 `probe-web.js` | R1–R6（身份面板）+ N0–N10（座位租约）+ P1–P3b（**P0 复现**） | **116/116** |
+| 小程序 `probe-index-page.js` | M1–M8e（座位租约）+ P1–P3b（**P0 复现**） | **152/152** |
 
-反证（把 web 修复退回 bug 状态）：**R1/R2/R4/R6 四项 FAIL** —— 证明断言确实守住该 bug、非恒真。
+反证（把两处修复退回）：
+- web 修复 → **R1/R2/R4/R6 四项 FAIL**
+- P0 修复（两端）→ **P1/P1b/P2/P2b/P3 五项 FAIL**，且复现出 `seat_state{locked:["black"]}`
+  —— 精确还原用户现象，证明断言确实守住该 bug、非恒真。
 
 ---
 
