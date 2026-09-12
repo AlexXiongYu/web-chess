@@ -42,7 +42,7 @@
 | 身份选择时机 | **进房后**再选（`needIdentityPick`），面板标"已被选"且禁选已占用 | 同左，见第八节 |
 | 空房落子守卫 | 在线模式未收到对方颜色消息前不许落子（`opponentJoined`） | 同左，见第八节 |
 | 取消选身份 | = 退出房间（广播 `spectator_left` + `unsubscribe`） | 同左 |
-| 版本号展示 | 页面右下角灰色小字 `v1.3.7`（`APP_VERSION`） | 同左（`version` 字段绑定） |
+| 版本号展示 | 页面右下角灰色小字 `v1.3.8`（`APP_VERSION`） | 同左（`version` 字段绑定） |
 | GoEasy 实例 | 模块级单例，`initGoEasy()` 只建一次（`_goeasySingleton`） | 同左；另有 `_goeasyConnected` 记录连接态（见 5.3） |
 | 结局提示 | 观战者沿用「某某获胜」；对局者改为「你赢了 / 你输了」+ 配色类；**覆盖层半透明**（alpha 0.68，不糊棋盘） | 同左，见 5.3 |
 | 轮次提示 | `active-turn` 带渐变流动 + 扫光；动画作用在既有 ●/○ 上（**不得**再加 `::before` 圆点） | 同左 |
@@ -205,6 +205,7 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 | **轮次动画与既有 ●/○ 标记重复（v1.3.5）** | 玩家名文本里已内嵌回合标记（`render()` 写入 `oppDot`/`myDot`：`●` 该走 / `○` 待走），又额外加了 `.active-turn .player-name::before` 脉冲圆点 → 同一行出现**两个符号** | 删掉名字里的 ●/○（及 `oppDot`/`myDot`/`topDot`/`botDot` 变量），**保留** `::before` 脉冲圆点作为唯一轮次指示，幅度 `scale(1.55)` 保证可见 |
 | **掉线方座位被静默接手（v1.3.6，用户实测）** | 只有观战者离开会广播，**对弈者掉线完全静默**；`doJoinRoom` 又只看 `_roomColors`（掉线方不会应答 `room_info`）→ 掉线方座位被判成空位；新人进房发 `request_sync` 就拿到整盘残局，直接顶替那位子 | 座位租约：5s 心跳 `ping` 续租 + 60s 宽限期锁定；`room_check` 应答补发 `seat_state`；空位判定改两路取或；非对局座位请求 `sync` 先弹接手确认面板，拒绝则 `reject_takeover` → 请求方转观战 |
 | **网页端身份面板自定义输入行不随选项收起（v1.3.6，用户实测）** | 点过「自定义...」后再改点预设身份，输入框不消失 → `confirmRolePicker()` 仍走"自定义"分支 → 卡在「请输入自定义名称」，只能以自定义身份加入。小程序端无此问题 | 预设选项 onclick 显式 `display='none'`；`renderRolePicker()` 末尾加收敛兜底（`_rolePickIdx>=0` 即收起） |
+| **观战者误触发接手确认面板 → 双方双双弹窗（v1.3.8，用户实测）** | 第三个进房观战者确认身份后广播 `request_sync`（取当前棋局渲染棋盘，属白名单合法消息），而接手守卫只判「请求方不是我对手」，`sender='spectator'` 恒 ≠ `oppColor()` → 守卫成立 → 两个对局者各弹一次「有人想接手这局棋」 | 接手守卫加前提：必须 `requesterIsPlayer`（请求方本身是白/黑座位）才进入确认流程；观战者的 `request_sync` 走正常回 sync；连带修 `request_sync` 的身份写入不再接受观战者 `identity` |
 | **【P0】v1.3.6 座位租约把新人自己锁死 → 后进房直接变观战（用户实测）** | `joinRoom()` 先把 `myColor` 预设为 `'black'` → 新人广播 `room_check` 时 `sender='black'` → `room_check` 在回声过滤里被豁免，而 `touchSeat(data.sender)` 对它无条件生效 → 房主误以为黑座有人并通过 `seat_state` 回告 → 新人吃下后自己的黑座也被锁死 → `hasWhite && hasBlack` → 强制观战，**压根无法对局** | ① `touchSeat` 忽略**自己的座位**（自己在线由自己的心跳维护，不靠"收到自己的消息"续租）；② `room_check` 不参与续租（进房前探房消息，发送方还没决定座位，`sender` 只是脚手架值） |
 
 ### 5.4 回归验证
@@ -355,7 +356,7 @@ v1.2.5～v1.3.0 的流程是 **先选身份 → 再进房**（`createRoom()`/`jo
 
 ---
 
-## 九、座位租约与在线维持（v1.3.6 新增，v1.3.7 修 P0，两端同构）
+## 九、座位租约与在线维持（v1.3.6 新增，v1.3.7 修 P0，v1.3.8 修误报，两端同构）
 
 ### 9.1 问题（用户实测发现）
 
@@ -384,6 +385,8 @@ v1.2.5～v1.3.0 的流程是 **先选身份 → 再进房**（`createRoom()`/`jo
 | 7 | 收到 `seat_state` → 把 locked 记成"刚活跃"、expired 记成"已过期" | ✓ | ✓ |
 | 8 | `doJoinRoom` 空位判定改为两路取或：`_roomColors[c] \|\| seatLocked(c)` | ✓ | ✓ |
 | 9 | 非对局座位请求 `sync` 且本地有残局 → 弹 `recv-takeover` 确认面板，**不直接发残局** | ✓ | ✓ |
+| 9b | **接手守卫须先验请求方本身是白/黑座位**：观战者的 `request_sync` 走正常回 sync，不得弹面板（v1.3.8） | ✓ | ✓ |
+| 9c | `request_sync` 的身份写入只接受白/黑座位发来的 `identity`，观战者的不得写入 `oppIdentity`（v1.3.8） | ✓ | ✓ |
 | 10 | 同意 → 广播 `sync`；拒绝 → 广播 `reject_takeover{target}` | ✓ | ✓ |
 | 11 | 收到 `reject_takeover` → 请求方转为观战 | ✓ | ✓ |
 | 12 | `SPECTATOR_ALLOWED_SEND` 追加 `'ping'`（观战者也要能续租） | ✓ | ✓ |
@@ -446,12 +449,64 @@ v1.3.6 刚上线的座位租约引入了**比原 bug 更严重**的回归 ——
 | 探针 | 新增段 | 结果 |
 |------|--------|------|
 | 网页 `probe-web.js` | R1–R6（身份面板）+ N0–N10（座位租约）+ P1–P3b（**P0 复现**） | **116/116** |
-| 小程序 `probe-index-page.js` | M1–M8e（座位租约）+ P1–P3b（**P0 复现**） | **152/152** |
+| 小程序 `probe-index-page.js` | M1–M8e（座位租约）+ P1–P3b（**P0 复现**） | **153/153** |
 
 反证（把两处修复退回）：
 - web 修复 → **R1/R2/R4/R6 四项 FAIL**
 - P0 修复（两端）→ **P1/P1b/P2/P2b/P3 五项 FAIL**，且复现出 `seat_state{locked:["black"]}`
   —— 精确还原用户现象，证明断言确实守住该 bug、非恒真。
+- v1.3.8 修复（两端）→ **N6/N6b（web）、M6b/M6b2（MP）四项 FAIL**，
+  复现出 `mode=recv-takeover shown=true` —— 精确还原"第三人观战导致双方弹窗"。
+
+### 9.7 v1.3.8：观战者误触发接手确认面板
+
+**用户实测**：
+
+> 「1.3.7实测可以对局了，但是第三人加入观战后，对局双方都会收到一个有人想接手的提示。」
+
+**根因**：观战者确认身份后**也会**广播 `request_sync` —— 这是它的合法用途
+（取当前棋局用于渲染棋盘），`request_sync` 本就在 `SPECTATOR_ALLOWED_SEND` 白名单里。
+而 v1.3.6 的残局接手守卫只判两件事：`iAmPlayer`（我是对弈者）+ `!reqIsMyOpponent`
+（请求方不是我对手）。观战者的 `sender='spectator'` 恒 ≠ `oppColor()`：
+
+| 条件 | 值 | 结论 |
+|------|-----|------|
+| `iAmPlayer` | `true`（我是对弈者） | ✅ |
+| `hasHistory` | `true`（已走 N 步） | ✅ |
+| `!reqIsMyOpponent` | `true`（`'spectator'` ≠ `'black'`） | ✅ |
+| → 守卫成立 | | ❌ **误弹面板** |
+
+两个对局者各收一条观战者的 `request_sync`，各自弹一次 —— 即用户看到的"双方都收到提示"。
+
+> **关键认识**：v1.3.6 的守卫用"**不是我的对手**"来近似"**是来顶替掉线方的第三人**"，
+> 这个近似在引入观战者后失效了 —— 观战者同样满足"不是我的对手"。
+> **否定式判据（≠）永远要先确认正域（是什么），再加排除项。**
+
+**修复**（接收端加前提，两端对称）：
+
+```js
+var requesterIsPlayer = requesterSeat === 'white' || requesterSeat === 'black';
+if (iAmPlayer && hasHistory && requesterIsPlayer && !reqIsMyOpponent && needIdentityPick !== true) {
+```
+
+连带修：`request_sync` 的身份写入也不再接受观战者的 `identity`
+（`if (!isSpectator && data.identity && (data.sender === 'white' || data.sender === 'black'))`），
+否则观战者名字会被误写进对局者的对手身份栏。
+
+**⚠️ 遗留议题：接手确认面板在修完 v1.3.8 后已无正常触发路径。**
+协议上只有两个对弈座位，`requesterIsPlayer && !reqIsMyOpponent` 意味着请求方只能是
+`oppColor()` —— 而那正好是"对手本人"、走 N9 老路径。换言之：
+**`recv-takeover` 面板当前是死代码**。它的原始意图（"新人顶替掉线方"）在协议层面
+**根本区分不出来**：`oppColor()` 座位的请求既可能是"对手重连回来了"，也可能是
+"新人抢占了空位"，二者 `sender` 完全相同。
+真正的解决方案是**座位身份令牌**（座位租约里带上会话令牌，重连者证明自己是原主），
+属于 v1.4.0 范畴。当前保留面板代码但不清除，等该议题定案后一并处理。
+
+### 9.8 回归验证补充
+
+`N6b` / `M6b2` 是本次新增的**反向断言**：修复后观战者的 `request_sync` 不仅要"不弹面板"，
+还**必须**正常回一份 `sync` —— 观战者的棋盘就是靠它渲染的。
+只测"不弹面板"会漏掉"顺手把观战者的棋盘来源一起掐了"这种过度修复。
 
 ---
 
