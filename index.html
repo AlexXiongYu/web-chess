@@ -5,8 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.3.1 | 最后更新: 2026-09-12
+      版本: 1.3.2 | 最后更新: 2026-09-12
       变更:
+        v1.3.2 - 两端：身份「撞名自愈」硬保证。v1.3.1 把身份选择挪到进房后，靠"已被占用"
+                 列表拦重复；但两人若不是先后选、而是同时选同一个身份，这条路就漏了——
+                 对方确认身份的消息还在路上，本地列表仍是空的（未确认身份时对 room_check
+                 的应答按设计只报空身份，见 C1）。现在每次确认身份都会把
+                 claimAt(确认时刻) + clientId(本页随机 id) 随消息一起广播，双方拿到两份
+                 抢先权后用同一套规则各自裁决：先确认者保留身份，后确认者自动让位重选
+                 （原身份进占用列表锁死，无法再选回）。同刻则按 clientId 字典序决胜。
+                 于是无论消息时序如何，房间里都不会出现两个同身份。
+                 保留身份一方会补发一次身份广播，防止对端漏收导致裁决无法收敛。
         v1.3.1 - 两端：身份选择改为「进房后再选」——先订阅进房、拿到房间里真实成员的身份，
                  再弹身份面板，这样「哪些身份已被选」才真正生效（此前在进房前选，占用列表永远是空的）；
                  空房守卫：在线模式下还没等到对手进房前不许落子
@@ -378,6 +387,13 @@
     var _roomIdentities = [];
     var _rolePickerMode = '';
     var _rolePickIdx = 0;
+    // ===== 身份冲突裁决（v1.3.2）=====
+    // "已被占用"列表挡不住"两个人同时选同一个身份"：对方确认身份的消息还在路上时，
+    // 本地列表就是空的。所以每次确认身份都带一个抢先权随消息广播，双方拿到两份抢先权
+    // 后用同一套规则各自算 —— 结论必然一致，落后的那一方自动让位重选。
+    var _clientId = 'c' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    var _claimAt = 0;                // 我确认身份的时刻；0 = 还没确认（默认名不算已选）
+    var _clashPeerNotified = false;  // 已提示过对方撞名，避免反复打扰
     // 预设身份（与小程序版 roles 一致，改这里要两端同步）
     var ROLES = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'];
     // 对手是否已进房（在线模式）：没确认之前不允许落子，否则白方会在空房间里自己走第一步
@@ -398,7 +414,7 @@
     var _playerIdentities = {};
 
     // 版本号：页面角落展示，改版本时同步改这里 + 头部注释 + 小程序 index.js
-    var APP_VERSION = '1.3.1';
+    var APP_VERSION = '1.3.2';
 
     // ===== 观战者权限（与小程序端同步维护，详见 docs/CONSISTENCY.md）=====
     // 房间是 GoEasy 的一个频道，白方/黑方/观战者都收到全部消息，
@@ -474,6 +490,9 @@
             return;
         }
         payload.sender = myColor;
+        // 身份抢先权随每条消息广播（对端撞名时靠它裁决谁让位）
+        payload.clientId = _clientId;
+        payload.claimAt = _claimAt;
         try { goeasy.pubsub.publish({ channel: currentRoom, message: JSON.stringify(payload) }); }
         catch(e) {}
     }
@@ -487,7 +506,7 @@
     }
 
     function saveGameToLocal() {
-        var data = { roomId: currentRoom, color: myColor, fen: game.fen(), pgn: game.pgn(), identity: myIdentity, oppIdentity: oppIdentity };
+        var data = { roomId: currentRoom, color: myColor, fen: game.fen(), pgn: game.pgn(), identity: myIdentity, oppIdentity: oppIdentity, claimAt: _claimAt };
         localStorage.setItem('chessSave', JSON.stringify(data));
     }
 
@@ -499,6 +518,8 @@
         _rolePickerMode = 'create';
         needIdentityPick = true;
         opponentJoined = false;
+        _claimAt = 0;
+        _clashPeerNotified = false;
         isSpectator = false;
         myColor = 'white';
         game.reset();
@@ -536,6 +557,8 @@
         _rolePickerMode = 'join';
         needIdentityPick = true;
         opponentJoined = false;
+        _claimAt = 0;
+        _clashPeerNotified = false;
         isSpectator = false;
         myColor = 'black';   // 先按黑方进房，房满检查结束后再按房间情况修正
         _checkingRoom = true;
@@ -595,6 +618,7 @@
         currentRoom = "";
         needIdentityPick = false;
         opponentJoined = false;
+        _claimAt = 0;
         showGameUI("本地");
         saveGameToLocal();
     }
@@ -621,6 +645,9 @@
         needIdentityPick = false;
         _rolePickerMode = '';
         _roomIdentities = [];
+        // 恢复原抢先权：断线重连的人不该被当成"后选身份的人"而丢掉自己的名字
+        _claimAt = savedData.claimAt || 0;
+        _clashPeerNotified = false;
         opponentJoined = game.history().length > 0;
 
         document.getElementById('room-tip').innerText = "断线重连成功";
@@ -693,7 +720,9 @@
         document.getElementById('role-picker-title').innerText = '选择你的身份';
         document.getElementById('role-picker-sub').innerText = (mode === 'create')
             ? '房间已建好，选好身份后把房间号发给对手'
-            : '已被别人占用的身份会标注「已被选」';
+            : (mode === 'clash'
+                ? '这个身份被对方抢先选走了，请换一个身份'
+                : '已被别人占用的身份会标注「已被选」');
         // 默认落在第一个"未被占用"的身份上，省得用户还要手动避开已被占的
         var occupied = _roomIdentities || [];
         var sel = _rolePickIdx;
@@ -728,14 +757,51 @@
         // 白/黑对局方的身份顺带记下来，供观战者身份栏显示
         if (sender === 'white' || sender === 'black') rememberPlayerIdentity(sender, identity);
         if (!needIdentityPick && identity === myIdentity) {
-            // 对方和我撞名了：提醒一下，否则上下两栏显示同一个名字分不清谁是谁
-            if (!isSpectator && sender !== myColor) notice('注意：对方也用了「' + identity + '」这个身份', 3500);
+            // 撞名：提示与裁决统一交给 checkIdentityClash（谁让位、谁保留由抢先权算）
             return;
         }
         if (_roomIdentities.indexOf(identity) === -1) {
             _roomIdentities.push(identity);
             refreshRoleOccupied();
         }
+    }
+
+    // ===== 撞名裁决（v1.3.2）=====
+    // 双方各自用同一套规则算：(claimAt, clientId) 更大的一方算"后到"，必须让位。
+    // 因为两边拿到的是同样两份抢先权，结论必然一致 —— 既不会都让位，也不会都不让。
+    function checkIdentityClash(peerIdentity, peerClaimAt, peerClientId) {
+        if (!peerIdentity || !myIdentity) return;
+        if (!_claimAt || needIdentityPick) return;                // 我还没确认身份，不参与裁决
+        if (peerIdentity !== myIdentity) return;                  // 没撞名
+        if (!peerClientId || peerClientId === _clientId) return;  // 自己的回显 / 老版本对端
+        var peerAt = peerClaimAt || 0;
+        var peerWins = (peerAt !== _claimAt)
+            ? (peerAt < _claimAt)                                 // 对方更早确认 → 我让位
+            : (String(peerClientId) < String(_clientId));         // 同刻 → clientId 小者胜
+        if (peerWins) {
+            forceRepickIdentity(peerIdentity);
+            return;
+        }
+        // 我保留身份：补发一次身份广播，防止对方漏收我先前那条消息（否则它拿不到抢先权、继续撞名）
+        if (!_clashPeerNotified) {
+            _clashPeerNotified = true;
+            notice('对方也选了「' + peerIdentity + '」，已请他换一个身份', 3500);
+            if (!isSpectator) broadcast({ type: 'request_sync', identity: myIdentity });
+        }
+    }
+
+    // 让位：清掉我的身份、把撞到的名字锁进占用列表、重新弹身份面板
+    function forceRepickIdentity(taken) {
+        if (taken && _roomIdentities.indexOf(taken) === -1) _roomIdentities.push(taken);
+        myIdentity = '';
+        _claimAt = 0;
+        _customIdentityConfirmed = null;
+        _rolePickIdx = null;
+        needIdentityPick = true;
+        updateBoardState();
+        updateStatusText();
+        openRolePicker('clash');
+        notice('「' + taken + '」被对方抢先占了，请换一个身份', 4000);
     }
 
     function confirmRolePicker() {
@@ -758,6 +824,9 @@
         _customIdentityConfirmed = identity;
         myIdentity = identity;
         needIdentityPick = false;
+        // 抢先权：确认时刻 + 本页随机 id（随消息广播，双方据此裁决撞名，v1.3.2）
+        _claimAt = Date.now();
+        _clashPeerNotified = false;
         document.getElementById('role-picker-mask').style.display = 'none';
         customRow.style.display = 'none';
         saveGameToLocal();
@@ -797,6 +866,8 @@
         currentRoom = '';
         _roomIdentities = [];
         _roomColors = {};
+        _claimAt = 0;
+        _clashPeerNotified = false;
         _playerIdentities = {};
         spectators = [];
         isSpectator = false;
@@ -852,6 +923,8 @@
                 if (data.target && data.target !== myColor) return;
                 // 记录房间里已被占用的身份（身份重复检验的数据来源；观战者身份栏也用它）
                 rememberRoomIdentity(data.identity, data.sender);
+                // 撞名裁决：两人同时选了同一身份时，靠抢先权(claimAt, clientId)让后到的一方重选
+                checkIdentityClash(data.identity, data.claimAt, data.clientId);
 
                 if(data.type === 'move' || data.type === 'sync') {
                     if (!isSpectator && data.identity) oppIdentity = data.identity;
