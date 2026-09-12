@@ -5,8 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.3.0 | 最后更新: 2026-09-12
+      版本: 1.3.1 | 最后更新: 2026-09-12
       变更:
+        v1.3.1 - 两端：身份选择改为「进房后再选」——先订阅进房、拿到房间里真实成员的身份，
+                 再弹身份面板，这样「哪些身份已被选」才真正生效（此前在进房前选，占用列表永远是空的）；
+                 空房守卫：在线模式下还没等到对手进房前不许落子
+                 （此前建房后白方会在空房间里自己走第一步）；
+                 取消身份选择 = 退出房间（含 unsubscribe 退订频道）；身份撞名双向提醒
         v1.3.0 - 两端：全部弹窗改为「页面内提示」——通知条 notice（替代 alert/showToast）+
                  棋盘上的页内确认面板 prompt（替代 confirm/showModal），面板显示期间棋盘冻结；
                  页面角落显示版本号（灰色小字）；
@@ -166,10 +171,11 @@
         .captured-row { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
         .captured-piece { width: 18px; height: 18px; flex-shrink: 0; }
 
-        /* 角色选择弹窗 */
+        /* 身份选择弹窗（进房后弹出） */
         #role-picker-mask { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 200; display: flex; justify-content: center; align-items: center; }
         #role-picker-box { background: white; border-radius: 12px; padding: 20px; width: 85%; max-width: 320px; box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
         #role-picker-title { font-size: 18px; font-weight: bold; text-align: center; margin-bottom: 12px; }
+        #role-picker-sub { font-size: 12px; color: #888; text-align: center; line-height: 1.5; margin: -6px 0 10px; }
         .role-pick-option { padding: 12px; margin: 6px 0; border-radius: 8px; background: #f0f4ff; text-align: center; font-size: 16px; font-weight: bold; cursor: pointer; }
         .role-pick-option.role-occupied { background: #eee; color: #999; cursor: default; }
         .role-pick-option.role-selected { background: #c8e6c9; }
@@ -194,17 +200,18 @@
         <button onclick="joinRoom()">加入房间 (执黑)</button>
     </div>
 
-    <!-- 角色选择弹窗 -->
-    <div id="role-picker-mask" style="display:none;" onclick="cancelRolePicker()">
-        <div id="role-picker-box" onclick="event.stopPropagation()">
+    <!-- 身份选择（进房后才弹出：此时才能看到房里已被占用的身份） -->
+    <div id="role-picker-mask" style="display:none;">
+        <div id="role-picker-box">
             <div id="role-picker-title"></div>
+            <div id="role-picker-sub"></div>
             <div id="role-picker-list"></div>
             <div id="role-picker-custom-row" style="display:none;">
                 <input id="role-custom-input" type="text" placeholder="输入自定义名称" maxlength="10" oninput="onCustomIdentityInput()" style="flex:1;padding:8px;border:1px solid #007bff;border-radius:4px;">
                 <button onclick="confirmCustomFromPicker()" style="background:#28a745;color:#fff;margin:0;padding:6px 12px;">确定</button>
             </div>
             <div style="display:flex;gap:10px;margin-top:15px;justify-content:center;">
-                <button onclick="cancelRolePicker()" style="background:#ccc;color:#333;">取消</button>
+                <button onclick="cancelRolePicker()" style="background:#ccc;color:#333;">离开房间</button>
                 <button onclick="confirmRolePicker()" style="background:#007bff;">确认</button>
             </div>
         </div>
@@ -371,6 +378,12 @@
     var _roomIdentities = [];
     var _rolePickerMode = '';
     var _rolePickIdx = 0;
+    // 预设身份（与小程序版 roles 一致，改这里要两端同步）
+    var ROLES = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'];
+    // 对手是否已进房（在线模式）：没确认之前不允许落子，否则白方会在空房间里自己走第一步
+    var opponentJoined = false;
+    // 是否还等着用户选身份（进房后才选，见 createRoom/joinRoom）
+    var needIdentityPick = false;
     var undoTimer = null;
     // 重开请求与悔棋对称：pending 标志 + 超时定时器
     var isRestartPending = false;
@@ -385,7 +398,7 @@
     var _playerIdentities = {};
 
     // 版本号：页面角落展示，改版本时同步改这里 + 头部注释 + 小程序 index.js
-    var APP_VERSION = '1.3.0';
+    var APP_VERSION = '1.3.1';
 
     // ===== 观战者权限（与小程序端同步维护，详见 docs/CONSISTENCY.md）=====
     // 房间是 GoEasy 的一个频道，白方/黑方/观战者都收到全部消息，
@@ -396,6 +409,10 @@
     // 页内确认面板自动关闭时间：无人应答时必须自己退场，否则棋盘被永久冻结
     var PROMPT_TIMEOUT = 25000;
     var NOTICE_MS = 2200;
+    // 加入房间时，订阅后等对端 room_info 应答的最长时间（毫秒）。
+    // 这段时间用于判断"有空位 / 已满(转观战)"；身份选择面板要等它结束才弹，
+    // 因为"哪些身份已被占"依赖这段时间收到的 room_info / room_check。
+    var ROOM_CHECK_MS = 3000;
 
     function initGoEasy() {
         if (!goeasy) {
@@ -443,6 +460,10 @@
         if (isSpectator && currentRoom) {
             broadcast({ type: 'spectator_left', identity: myIdentity });
         }
+        // 退订频道，避免离开页面后仍收到房间消息
+        if (currentRoom && goeasy && goeasy.pubsub) {
+            try { goeasy.pubsub.unsubscribe({ channel: currentRoom }); } catch(e) {}
+        }
     });
 
     function broadcast(payload) {
@@ -470,66 +491,110 @@
         localStorage.setItem('chessSave', JSON.stringify(data));
     }
 
+    // ===== 建房 / 加入：先订阅进房，再选身份 =====
     function createRoom() {
         initAudio();
         _rolePickIdx = 0;
         _roomIdentities = [];
-        showRolePicker('create');
-    }
-
-    function doCreateRoom() {
+        _rolePickerMode = 'create';
+        needIdentityPick = true;
+        opponentJoined = false;
+        isSpectator = false;
+        myColor = 'white';
+        game.reset();
+        localStorage.removeItem('chessSave');
         var roomId = Math.floor(1000 + Math.random() * 9000).toString();
         currentRoom = roomId;
         showGameUI(roomId);
-        connectRoom(roomId);
-        saveGameToLocal();
+        if (connectState === 'ready') {
+            doCreateRoom();
+        } else if (connectState === 'failed') {
+            // 离线：退化为同屏对战，不需要选身份
+            needIdentityPick = false;
+            _rolePickerMode = '';
+            fallbackLocal();
+        } else {
+            pendingCreate = true;
+            notice('正在连接服务器…', 2500);
+            if (connectState === 'idle') initGoEasy();
+        }
+    }
+
+    // 连接就绪后的真正进房动作（也可由连接成功后的 pendingCreate 触发）
+    function doCreateRoom() {
+        if (!currentRoom) return;
+        connectRoom(currentRoom);
+        openRolePicker('create');
     }
 
     function joinRoom() {
         initAudio();
-        _rolePickIdx = 0;
-        showRolePicker('join');
-    }
-
-    function doJoinRoom() {
         var roomId = document.getElementById('room-input').value.trim();
-        if(!roomId) return notice("请输入房间号！");
-
-        myColor = "black";
+        if (!roomId) return notice("请输入房间号！");
+        _rolePickIdx = 0;
+        _roomIdentities = [];
+        _rolePickerMode = 'join';
+        needIdentityPick = true;
+        opponentJoined = false;
+        isSpectator = false;
+        myColor = 'black';   // 先按黑方进房，房满检查结束后再按房间情况修正
         _checkingRoom = true;
         _roomColors = {};
         currentRoom = roomId;
+        game.reset();
+        localStorage.removeItem('chessSave');
+        showGameUI(roomId);
+        document.getElementById('room-tip').innerText = "正在检查房间…";
+        if (connectState === 'ready') {
+            doJoinRoom();
+        } else if (connectState === 'failed') {
+            needIdentityPick = false;
+            _rolePickerMode = '';
+            leaveRoom();
+            notice('连接失败，无法加入房间');
+        } else {
+            pendingJoin = true;
+            notice('正在连接服务器…', 2500);
+            if (connectState === 'idle') initGoEasy();
+        }
+    }
+
+    // 订阅频道 → 发 room_check 收集房内已有玩家 → 判空位/房满 → 再弹身份面板
+    // （身份面板必须等这一步结束：占用列表要靠这段时间收到的 room_info/room_check 才能填上）
+    function doJoinRoom() {
+        var roomId = currentRoom;
+        if (!roomId) return;
         connectRoom(roomId);
+        notice('正在检查房间…', ROOM_CHECK_MS);
         setTimeout(function() {
             if (!_checkingRoom) return;
             _checkingRoom = false;
             var hasWhite = _roomColors['white'];
             var hasBlack = _roomColors['black'];
             if (hasWhite && hasBlack) {
+                // 房间已满 → 观战（只读）
                 isSpectator = true;
                 myColor = 'spectator';
-                game.reset();
                 document.getElementById('room-tip').innerText = "观战中（只读）";
-                showGameUI(roomId);
-                broadcast({ type: 'spectator_joined', identity: myIdentity });
-                broadcast({ type: 'request_sync', identity: myIdentity });
-                saveGameToLocal();
             } else {
+                // 有空位 → 作为对弈者加入
+                isSpectator = false;
                 if (hasWhite) myColor = 'black';
                 else if (hasBlack) myColor = 'white';
                 else myColor = 'black';
-                game.reset();
-                document.getElementById('room-tip').innerText = "你已加入房间，开始对弈";
-                showGameUI(roomId);
-                broadcast({ type: 'request_sync', identity: myIdentity });
-                saveGameToLocal();
+                document.getElementById('room-tip').innerText = "选择身份后开始对弈";
             }
-        }, 3000);
+            game.reset();
+            showGameUI(roomId);
+            openRolePicker('join');
+        }, ROOM_CHECK_MS);
     }
 
     // 连接失败时的离线同屏兜底（与小程序版行为一致）
     function fallbackLocal() {
         currentRoom = "";
+        needIdentityPick = false;
+        opponentJoined = false;
         showGameUI("本地");
         saveGameToLocal();
     }
@@ -551,6 +616,12 @@
         } else {
             game.load(savedData.fen);
         }
+
+        // 恢复的对局不再需要选身份；棋谱已有走子 ⇒ 对手确实存在过，否则仍等对方消息再解锁
+        needIdentityPick = false;
+        _rolePickerMode = '';
+        _roomIdentities = [];
+        opponentJoined = game.history().length > 0;
 
         document.getElementById('room-tip').innerText = "断线重连成功";
         showGameUI(currentRoom);
@@ -585,80 +656,168 @@
         }
     }
 
-    function showRolePicker(mode) {
+    // ===== 身份选择（进房后再选）=====
+    // 为什么改成"进房后再选"：身份重复检验依赖「房间里已有的身份」，而这份数据只能从
+    // 房间成员的消息（room_info / room_check / request_sync / move / sync）里拿到。
+    // 进房前就选 → 占用列表永远是空的 → 检验形同虚设。
+    function renderRolePicker() {
         var occupied = _roomIdentities || [];
-        document.getElementById('role-picker-title').innerText = mode === 'create' ? '建房 — 选择身份' : '加入 — 选择身份';
         var listEl = document.getElementById('role-picker-list');
-        var roles = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'];
         listEl.innerHTML = '';
-        for (var i = 0; i < roles.length; i++) {
-            var taken = occupied.indexOf(roles[i]) !== -1;
+        for (var i = 0; i < ROLES.length; i++) {
+            var taken = occupied.indexOf(ROLES[i]) !== -1;
             var div = document.createElement('div');
             div.className = 'role-pick-option' + (taken ? ' role-occupied' : '') + (_rolePickIdx === i ? ' role-selected' : '');
-            div.innerText = roles[i] + (taken ? '（已被选）' : '');
-            if (!taken) { div.setAttribute('data-idx', i); div.onclick = function() { _rolePickIdx = parseInt(this.getAttribute('data-idx')); showRolePicker(mode); }; }
+            div.innerText = ROLES[i] + (taken ? '（已被选）' : '');
+            if (!taken) {
+                (function (idx) {
+                    div.setAttribute('data-idx', idx);
+                    div.onclick = function () { _rolePickIdx = idx; renderRolePicker(); };
+                })(i);
+            }
             listEl.appendChild(div);
         }
         var custDiv = document.createElement('div');
-        custDiv.className = 'role-pick-option role-pick-custom';
+        custDiv.className = 'role-pick-option role-pick-custom' + (_rolePickIdx === -1 ? ' role-selected' : '');
         custDiv.innerText = '✏️ 自定义...';
-        custDiv.onclick = function() { _rolePickIdx = -1; document.getElementById('role-picker-custom-row').style.display = 'flex'; };
+        custDiv.onclick = function () {
+            _rolePickIdx = -1;
+            renderRolePicker();
+            document.getElementById('role-picker-custom-row').style.display = 'flex';
+        };
         listEl.appendChild(custDiv);
-        document.getElementById('role-picker-custom-row').style.display = 'none';
+    }
+
+    function openRolePicker(mode) {
         _rolePickerMode = mode;
+        document.getElementById('role-picker-title').innerText = '选择你的身份';
+        document.getElementById('role-picker-sub').innerText = (mode === 'create')
+            ? '房间已建好，选好身份后把房间号发给对手'
+            : '已被别人占用的身份会标注「已被选」';
+        // 默认落在第一个"未被占用"的身份上，省得用户还要手动避开已被占的
+        var occupied = _roomIdentities || [];
+        var sel = _rolePickIdx;
+        if (sel == null || sel < 0 || sel >= ROLES.length || occupied.indexOf(ROLES[sel]) !== -1) {
+            sel = -1;
+            for (var i = 0; i < ROLES.length; i++) { if (occupied.indexOf(ROLES[i]) === -1) { sel = i; break; } }
+            _rolePickIdx = sel;
+        }
+        // 预设名全被占 → 直接展开自定义输入
+        document.getElementById('role-picker-custom-row').style.display = (sel === -1) ? 'flex' : 'none';
+        renderRolePicker();
         document.getElementById('role-picker-mask').style.display = 'flex';
     }
+
+    // 房间里成员变化时刷新"已被选"标记 —— 身份重复检验真正生效的地方
+    function refreshRoleOccupied() {
+        var mask = document.getElementById('role-picker-mask');
+        if (!mask || mask.style.display === 'none') return;
+        var occupied = _roomIdentities || [];
+        if (_rolePickIdx != null && _rolePickIdx >= 0 && occupied.indexOf(ROLES[_rolePickIdx]) !== -1) {
+            // 我选中的身份刚被别人占了 → 清掉选中（切到"自定义"），逼用户换一个
+            _rolePickIdx = -1;
+            // 预设名可能已全被占 → 直接展开自定义输入，避免"看起来选中了自定义却是空的"
+            document.getElementById('role-picker-custom-row').style.display = 'flex';
+        }
+        renderRolePicker();
+    }
+
+    // 记录"房间里已被占用的身份"（任一成员消息里带 identity 时调用）
+    function rememberRoomIdentity(identity, sender) {
+        if (!identity) return;
+        // 白/黑对局方的身份顺带记下来，供观战者身份栏显示
+        if (sender === 'white' || sender === 'black') rememberPlayerIdentity(sender, identity);
+        if (!needIdentityPick && identity === myIdentity) {
+            // 对方和我撞名了：提醒一下，否则上下两栏显示同一个名字分不清谁是谁
+            if (!isSpectator && sender !== myColor) notice('注意：对方也用了「' + identity + '」这个身份', 3500);
+            return;
+        }
+        if (_roomIdentities.indexOf(identity) === -1) {
+            _roomIdentities.push(identity);
+            refreshRoleOccupied();
+        }
+    }
+
     function confirmRolePicker() {
+        var customRow = document.getElementById('role-picker-custom-row');
         var identity;
-        if (document.getElementById('role-picker-custom-row').style.display !== 'none' && customIdentity) {
-            identity = customIdentity.trim();
+        if (customRow.style.display !== 'none') {
+            identity = (customIdentity || '').trim();
             if (!identity) return notice("请输入自定义名称");
-            _customIdentityConfirmed = identity;
-        } else if (_rolePickIdx >= 0) {
-            identity = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'][_rolePickIdx];
+        } else if (_rolePickIdx != null && _rolePickIdx >= 0) {
+            identity = ROLES[_rolePickIdx];
         } else {
             return notice("请选择一个身份");
         }
-        myIdentity = identity;
-        document.getElementById('role-picker-mask').style.display = 'none';
-        document.getElementById('role-picker-custom-row').style.display = 'none';
-        if (_rolePickerMode === 'create') {
-            myColor = 'white';
-            game.reset();
-            localStorage.removeItem('chessSave');
-            if (connectState === 'ready') { doCreateRoom(); }
-            else if (connectState === 'failed') { fallbackLocal(); }
-            else { pendingCreate = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
-        } else {
-            if (connectState === 'ready') { doJoinRoom(); }
-            else if (connectState === 'failed') { notice('连接失败'); }
-            else { pendingJoin = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+        // 二次校验：面板打开期间对方可能刚好确认了同一个身份
+        if (_roomIdentities.indexOf(identity) !== -1) {
+            notice('该身份已被占用，请另选一个');
+            refreshRoleOccupied();
+            return;
         }
-    }
-    function cancelRolePicker() {
+        _customIdentityConfirmed = identity;
+        myIdentity = identity;
+        needIdentityPick = false;
         document.getElementById('role-picker-mask').style.display = 'none';
-        document.getElementById('role-picker-custom-row').style.display = 'none';
+        customRow.style.display = 'none';
+        saveGameToLocal();
+        updateBoardState();
+        // 身份定了才广播：让房间里其他人（含观战者）拿到我的身份，对方的"已被占用"列表随之更新
+        if (isSpectator) broadcast({ type: 'spectator_joined', identity: myIdentity });
+        broadcast({ type: 'request_sync', identity: myIdentity });
+        if (_rolePickerMode === 'create') notice('房间已建好，把房间号发给对手吧', 3000);
+        else notice('身份已选定：' + myIdentity, 2000);
     }
+    // 自定义输入行里的「确定」按钮
     function confirmCustomFromPicker() {
         var name = (customIdentity || '').trim();
         if (!name) return notice("请输入自定义名称");
-        _customIdentityConfirmed = name;
-        myIdentity = name;
+        document.getElementById('role-picker-custom-row').style.display = 'flex';
+        _rolePickIdx = null;
+        confirmRolePicker();
+    }
+    // 取消 = 退出房间：身份是"进房后必须做的选择"，取消就没有理由继续待在房里
+    function cancelRolePicker() {
         document.getElementById('role-picker-mask').style.display = 'none';
         document.getElementById('role-picker-custom-row').style.display = 'none';
-        if (_rolePickerMode === 'create') {
-            myColor = 'white';
-            game.reset();
-            localStorage.removeItem('chessSave');
-            if (connectState === 'ready') { doCreateRoom(); }
-            else if (connectState === 'failed') { fallbackLocal(); }
-            else { pendingCreate = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
-        } else {
-            if (connectState === 'ready') { doJoinRoom(); }
-            else if (connectState === 'failed') { notice('连接失败'); }
-            else { pendingJoin = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
-        }
+        _rolePickerMode = '';
+        needIdentityPick = false;
+        leaveRoom();
     }
+
+    // 退出房间：退订频道 + 复位房间相关的全部状态，回到开局设置面板
+    function leaveRoom() {
+        if (isSpectator && currentRoom) {
+            broadcast({ type: 'spectator_left', identity: myIdentity });
+        }
+        if (currentRoom && goeasy && goeasy.pubsub) {
+            try { goeasy.pubsub.unsubscribe({ channel: currentRoom }); } catch(e) {}
+        }
+        _checkingRoom = false;
+        currentRoom = '';
+        _roomIdentities = [];
+        _roomColors = {};
+        _playerIdentities = {};
+        spectators = [];
+        isSpectator = false;
+        opponentJoined = false;
+        pendingCreate = false;
+        pendingJoin = false;
+        game.reset();
+        selectedSquare = null;
+        localStorage.removeItem('chessSave');
+        document.getElementById('role-picker-mask').style.display = 'none';
+        document.getElementById('setup-panel').style.display = 'block';
+        document.getElementById('resume-btn').style.display = 'none';
+        document.getElementById('room-info').style.display = 'none';
+        document.getElementById('top-bar').style.display = 'none';
+        document.getElementById('bottom-bar').style.display = 'none';
+        document.getElementById('game-controls').style.display = 'none';
+        document.getElementById('board-container').style.display = 'none';
+        document.getElementById('room-tip').innerText = '';
+        updateSpectatorDisplay();
+    }
+
     function onCustomIdentityInput() {
         customIdentity = document.getElementById('role-custom-input').value;
     }
@@ -673,7 +832,17 @@
             onMessage: function(msg) {
                 var data;
                 try { data = JSON.parse(msg.content); } catch(e) { return; }
+                // 已退出房间 / 还没进房：房间消息一概不处理（取消选身份退房后不会再有副作用）
+                if (!currentRoom) return;
                 if(!isSpectator && data.type !== 'room_check' && data.type !== 'room_info' && data.sender === myColor) return;
+                // 观战者发的 spectator_joined 可能被回显，别把自己列进观战名单
+                if (isSpectator && data.type === 'spectator_joined' && data.identity === myIdentity) return;
+
+                // 对手「确实在场」的信号：收到对方颜色发来的任何消息。
+                // 在线模式下没这个信号就不许落子（否则白方在空房间里会自己走第一步）。
+                if (!isSpectator && (data.sender === 'white' || data.sender === 'black') && data.sender !== myColor) {
+                    opponentJoined = true;
+                }
 
                 // ===== 权限守卫 =====
                 // 观战者只读：悔棋/重开全系列一概不处理（观战者无权同意或拒绝）
@@ -681,8 +850,8 @@
                 // 收件人校验：请求/应答类消息带 target，只有收件人处理。
                 // 不带 target 的是老版本发的，按老逻辑走（由上面的观战者守卫兜底），保证新旧版本可混用。
                 if (data.target && data.target !== myColor) return;
-                // 观战者：记录白方/黑方真实身份，供上下身份栏显示
-                if (isSpectator && data.identity) rememberPlayerIdentity(data.sender, data.identity);
+                // 记录房间里已被占用的身份（身份重复检验的数据来源；观战者身份栏也用它）
+                rememberRoomIdentity(data.identity, data.sender);
 
                 if(data.type === 'move' || data.type === 'sync') {
                     if (!isSpectator && data.identity) oppIdentity = data.identity;
@@ -719,12 +888,19 @@
 
                 // ===== 房满检查：响应新人的 room_check =====
                 if(data.type === 'room_check' && currentRoom && !_checkingRoom) {
-                    broadcast({ type: 'room_info', color: isSpectator ? 'spectator' : myColor, identity: myIdentity });
+                    // 还没选身份时不报"默认名字"：否则会把脚手架名字当成真实身份传给对方，
+                    // 污染对方的"已被占用"列表。房满判定只看 color，与 identity 无关。
+                    broadcast({ type: 'room_info', color: isSpectator ? 'spectator' : myColor, identity: needIdentityPick ? '' : myIdentity });
                 }
-                // ===== 房满检查：收集 room_info 回复 =====
-                if(data.type === 'room_info' && _checkingRoom) {
-                    if (data.color && !_roomColors[data.color]) {
+                // ===== room_info：(a) 房满检查的应答  (b) 对方身份同步 =====
+                if(data.type === 'room_info') {
+                    if (_checkingRoom && data.color && !_roomColors[data.color]) {
                         _roomColors[data.color] = data.identity;
+                    }
+                    // 对方身份：直接用于上下身份栏，不必等到他走子
+                    if (!isSpectator && data.color === oppColor() && data.identity) {
+                        oppIdentity = data.identity;
+                        updateStatusText();
                     }
                 }
                 // ===== 观战：新人加入 =====
@@ -804,9 +980,12 @@
             onSuccess: function() {
                 if (_checkingRoom) {
                     broadcast({ type: 'room_check' });
-                } else {
-                    broadcast({ type: 'request_sync', identity: myIdentity });
+                    return;
                 }
+                // 还没选身份时先别发 request_sync：否则会把"默认名字"当成我的身份广播出去。
+                // 等 confirmRolePicker 选完身份再补发（见 confirmRolePicker）。
+                if (needIdentityPick) return;
+                broadcast({ type: 'request_sync', identity: myIdentity });
             }
         });
     }
@@ -1001,6 +1180,8 @@
     function requestRestart() {
         if (promptShown) return;   // 提示面板显示中不叠加新提示
         if (isSpectator) return notice("观战中不能重开。");
+        if (needIdentityPick) return notice("请先选择身份。");
+        if (needIdentityPick) return notice("请先选择身份。");
         if (isNetworkReady && currentRoom !== "") {
             if (isRestartPending) return notice("已发送重开请求，请等待对方响应。");
             showPrompt({ mode: 'send-restart', title: '重开', text: '发送重开请求给对手？', confirmText: '发送', cancelText: '取消' });
@@ -1220,8 +1401,12 @@
         // 页内确认面板显示期间：棋盘冻结，不接受任何落子操作
         if (promptShown) return;
         if (isSpectator || game.game_over() || pendingPromotionMove) return;
+        if (needIdentityPick) return;   // 身份还没选，先选身份
 
         if (isNetworkReady && currentRoom !== "") {
+            // 空房守卫：还没等到对手进房（没收到过对方颜色的任何消息）就不许落子。
+            // 否则建房后白方会在空房间里自己走第一步，对手进来时局面已经乱了。
+            if (!opponentJoined) { notice('等待对手加入…'); return; }
             var currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
             if (currentTurnColor !== myColor) return;
         }

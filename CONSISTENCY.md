@@ -38,6 +38,11 @@
 | 身份与表情 | 米爸/米妈/小米米；15 个 emoji 一致 | 同左 |
 | 断线恢复 | localStorage `chessSave` | wx.Storage `chessSave`（等价） |
 | **离线同屏兜底** | **`fallbackLocal()` → roomId='本地'** | **同左（本轮新增对齐）** |
+| 弹窗机制 | 页内：通知条 `notice` + 棋盘上的确认面板 `prompt`（**零** `alert`/`confirm`） | 同左（**零** `wx.showModal`/`wx.showToast`），见第六节 |
+| 身份选择时机 | **进房后**再选（`needIdentityPick`），面板标"已被选"且禁选已占用 | 同左，见第八节 |
+| 空房落子守卫 | 在线模式未收到对方颜色消息前不许落子（`opponentJoined`） | 同左，见第八节 |
+| 取消选身份 | = 退出房间（广播 `spectator_left` + `unsubscribe`） | 同左 |
+| 版本号展示 | 页面右下角灰色小字 `v1.3.1`（`APP_VERSION`） | 同左（`version` 字段绑定） |
 
 ---
 
@@ -196,8 +201,8 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 
 两端各有一份 Node 探针，**改协议后必须跑过**：
 
-- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（54 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/对弈者回归）
-- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（33 项，同一批场景）
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（97 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（64 项，同一批场景）
 
 做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
 或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有提示 / 有没有 publish / 棋局 fen 变没变"。
@@ -280,11 +285,67 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 
 - **加入房间的 3 秒房满判定窗口**：两人在 3s 窗口内同时加入，理论上可能都认为自己有空位。
   属既有设计（靠 GoEasy 频道 + 延时收集 `room_info`），要彻底解决需引入服务端仲裁，超出本次范围。
-- **同一身份重名**：两个人都选"👨🏻 米爸"时上下栏无法区分。属身份系统设计，未动。
+- **同一身份重名**：v1.3.1 已把身份选择移到进房之后，面板会标注"已被选"并**禁止选已被占用的身份**，
+  同时在对方与你撞名时给出提示；但**极端竞态**（两人几乎同时确认同一个身份）仍可能各选一个同名 ——
+  此时只提示、不强制改名（需要服务端仲裁才能真正杜绝）。
 
 ---
 
-## 八、同步开发约定（防漂移）
+## 八、身份选择模型（v1.3.1 新增，两端同构）
+
+### 8.1 为什么必须"进房后再选"
+
+v1.2.5～v1.3.0 的流程是 **先选身份 → 再进房**（`createRoom()`/`joinRoom()` 直接弹身份面板，
+确认后才 `connectRoom` + `subscribe`）。结果是身份面板里的"已被选"标记**永远是空的**：
+
+- 占用列表 `_roomIdentities` 的唯一数据来源是房间里其他成员的消息
+  （`room_info` / `request_sync` / `move` / `sync` / `spectator_joined` 里的 `identity` 字段）；
+- 而那时**还没订阅频道**，一条房间消息都收不到 → 重复检验形同虚设。
+
+所以 v1.3.1 把顺序反过来：**先订阅进房 → 收集房内真实身份 → 再弹身份面板**。
+
+### 8.2 两条建房/加入路径
+
+| 路径 | 进房动作 | 何时弹面板 | 面板里的占用列表 |
+|---|---|---|---|
+| **建房** `createRoom()` | 立刻分配房号 + `showGameUI` + `subscribe` | 订阅成功即弹（房里只有自己，列表为空） | 之后有人进房会通过 `room_info`/`request_sync` 实时补上 |
+| **加入** `joinRoom()` | 立刻 `subscribe` + 发 `room_check` | **等 `ROOM_CHECK_MS`(3000ms) 房况检查结束**再弹 | 检查期内收到各成员的 `room_info`，已填好 |
+
+加入路径为什么必须等 3s：房况检查同时决定"**有空位 → 当对弈者**"还是"**已满 → 转观战**"，
+而占用列表也要靠这段时间的 `room_info` 才能填上；两者共用同一个等待窗口。
+
+### 8.3 规则（两端逐条实现）
+
+1. **进房即锁棋盘**：`needIdentityPick` 为真期间
+   - `onSquareTap` / `handleSquareClick` 直接 `return`（不让落子）；
+   - `requestUndo` / `requestRestart` 只出通知条"请先选择身份"，不弹面板。
+2. **身份未定不广播身份**：`subscribe` 的 `onSuccess` 里
+   `if (needIdentityPick) return` —— 否则会把脚手架默认名（`👨🏻 米爸`）当成本人身份发出去，
+   污染对端的"已被占用"列表。**确认身份后**才补发 `request_sync`（观战者先补发 `spectator_joined`）。
+3. **房满应答不带假身份**：响应别人的 `room_check` 时，若自己还没选身份，`room_info.identity` 填**空串**；
+   房满判定只看 `color`，与 `identity` 无关。
+4. **占用列表实时刷新**：`refreshRoleOccupied()` 在每次收到新身份时重算"已被选"标记；
+   若**自己当前选中的那个身份刚被别人占了**，立刻清空选中，逼用户换一个。
+5. **确认时二次校验**：`confirmRolePicker()` 落定前再查一次 `rolePickerOccupied`，
+   命中则提示"该身份已被占用，请另选一个"并保持面板打开（防"面板打开期间对方刚好确认同名"）。
+6. **默认避开已占用**：面板打开时默认选中第一个**未被占用**的预设身份；
+   预设全被占则自动展开自定义输入。
+7. **取消 = 退出房间**：`cancelRolePicker()` → `_leaveRoom()` / `leaveRoom()`
+   （广播 `spectator_left`（若观战）→ `unsubscribe` 频道 → 复位全部房间状态 → 回开局面板）。
+   面板遮罩**不再**绑 `cancelRolePicker`，避免误触退房。
+8. **撞名双向提醒**：收到与 `myIdentity` 相同的身份（且来自对方颜色）→ 通知条提醒一次。
+9. **空房不许落子**：收到**对方颜色**（`white`/`black` 且不是自己）的任何房间消息 → `opponentJoined = true`；
+   在线模式且 `!opponentJoined` 时落子被拦并提示"等待对手加入…"。
+   本地同屏模式（`currentRoom === ''`）不受此约束。观战者消息不解锁。
+
+### 8.4 回归验证
+
+小程序探针 I/J/K 三节（40 项）、网页探针 W23–W34（24 项）覆盖上述全部规则。
+反证（对 v1.3.0 旧版跑）：小程序 **31 项 FAIL**、网页版 **19 项 FAIL** —— 证明断言有效、非恒真。
+
+---
+
+## 九、同步开发约定（防漂移）
 
 - 改 appkey / host / 房间号规则 / 任一消息 type 或字段 → **两边必须同步改**，并同步更新本文件与 README。
 - 新增交互（如新消息类型、新按钮）→ 先定协议，再各自实现，附跨端自测（网页建房↔小程序加入）。
