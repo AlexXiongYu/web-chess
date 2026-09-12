@@ -42,7 +42,10 @@
 | 身份选择时机 | **进房后**再选（`needIdentityPick`），面板标"已被选"且禁选已占用 | 同左，见第八节 |
 | 空房落子守卫 | 在线模式未收到对方颜色消息前不许落子（`opponentJoined`） | 同左，见第八节 |
 | 取消选身份 | = 退出房间（广播 `spectator_left` + `unsubscribe`） | 同左 |
-| 版本号展示 | 页面右下角灰色小字 `v1.3.1`（`APP_VERSION`） | 同左（`version` 字段绑定） |
+| 版本号展示 | 页面右下角灰色小字 `v1.3.4`（`APP_VERSION`） | 同左（`version` 字段绑定） |
+| GoEasy 实例 | 模块级单例，`initGoEasy()` 只建一次（`_goeasySingleton`） | 同左；另有 `_goeasyConnected` 记录连接态（见 5.3） |
+| 结局提示 | 观战者沿用「某某获胜」；对局者改为「你赢了 / 你输了」+ 配色类 | 同左，见 5.3 |
+| 轮次提示 | `active-turn` 带渐变流动 + 扫光 + 脉冲圆点动效 | 同左 |
 
 ---
 
@@ -196,13 +199,15 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 | 观战者收到走子会振动 | 只读方不该产生走子反馈 | 观战者只刷新棋盘 |
 | 观战者看到自己被宣布为冠军 | 将杀提示用 `myIdentity`/`oppIdentity` 取胜者，而观战者**不是对局方**，这两个字段指向观战者自己 → 把观众名当冠军 | 观战者改用身份表 `_playerIdentities[winnerColor]`；对弈者逻辑不变 |
 | 网页版 `#status` 元素已删但代码仍在写它 | `getElementById` 返回 null → `TypeError`。**`requestUndo`/`requestRestart` 在 broadcast 之前抛错 → 悔棋/重开请求根本发不出去**；`window.onload` 里同样抛错 → `checkSavedGame()` 执行不到 → 「恢复刚才断线的对局」按钮永不显示 | 移除全部 `#status` 访问 |
+| **小程序加入房间永久卡在「正在检查房间…」（v1.3.4）** | GoEasy SDK 是**模块级单例**：`getInstance()` 内部走 `init()`，而 `init()` 在"已连接"状态下抛 `Initialization failed. Please disconnect and try again.`。小程序页面共享同一 JS 上下文，故**第二次进页面**必然抛错。旧代码 `onLoad` 每次 `this.goeasy = null` 后重建实例 → `onLoad` 在 `initGoEasy()` 处中断：`connectState` 永远 `idle` → 点「加入房间」落进 `pendingJoin` → 又 `initGoEasy()` → 又抛错 → `roomTip` 永久卡住。**建房看似正常，只因 `doCreateRoom()` 的身份面板不等连接就弹，属巧合掩盖**；点分享卡片（新开页面实例）则必然踩中 | 实例提到模块作用域只建一次（`_goeasySingleton`）+ `_goeasyConnected` 记录连接态；`connectRoom` 改为先 `unsubscribe` 再 `subscribe`，保证回调绑定当前实例且不重复登记 |
+| **表情面板点开后上半部分被遮住（v1.3.4，网页端）** | `#game-controls` 用了 `overflow-x: auto`，绝对定位的 `#emoji-panel`（`position:absolute`）被这个滚动容器裁掉 | `#game-controls` 改 `overflow: visible` + `flex-wrap: wrap`；面板加 `clampEmojiPanel()` 视口避让（窄屏也不切图） |
 
 ### 5.4 回归验证
 
 两端各有一份 Node 探针，**改协议后必须跑过**：
 
-- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（97 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归）
-- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（64 项，同一批场景）
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（114 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/**进房后选身份**/**空房不许落子**/对弈者回归/**GoEasy单例复用**/**分享卡片自动进房**/**结局输赢配色**）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（80 项，同一批场景 + **表情面板不裁切**/**结局配色**/**回合动画**）
 
 做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
 或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有提示 / 有没有 publish / 棋局 fen 变没变"。
