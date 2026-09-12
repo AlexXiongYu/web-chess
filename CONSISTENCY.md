@@ -196,11 +196,11 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 
 两端各有一份 Node 探针，**改协议后必须跑过**：
 
-- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（32 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/对弈者回归）
-- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（17 项，同一批场景 + 将杀胜者）
+- 小程序：`WeChatProjects/.ci-secrets/probe-index-page.js`（54 项，覆盖观战者/收件人/超时/交叉/脏数据/身份栏/将杀胜者/页内提示与冻结/对弈者回归）
+- 网页版：`WeChatProjects/.ci-secrets/probe-web.js`（33 项，同一批场景）
 
 做法：打桩 `wx`（或 `document`/`window`/`localStorage`）与 GoEasy，加载**真实** `pages/index/index.js`
-或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有弹窗 / 有没有 publish / 棋局 fen 变没变"。
+或 `docs/index.html` 的内联脚本，然后手工喂 `onMessage` 消息，断言"有没有提示 / 有没有 publish / 棋局 fen 变没变"。
 
 两份探针都支持从命令行传源码路径（`node probe.js <源码路径>`），
 所以可对 `git show <旧commit>:<文件>` 导出的**修复前版本**跑一遍，
@@ -209,7 +209,82 @@ try to get input sourcemap of .../utils/chess.js catch error TypeError ...
 
 ---
 
-## 六、同步开发约定（防漂移）
+## 六、页内提示模型（v1.3.0 新增，两端同构）
+
+### 6.1 为什么不再用系统弹窗
+
+`wx.showModal` / `wx.showToast`（小程序）与 `confirm` / `alert`（网页）都是**系统级**弹层：
+样式不可控、两端观感不一致，而且 `confirm`/`alert` 会**阻塞 JS 主线程**、弹窗期间页面完全冻结不可控。
+改成页面内机制后，提示由我们自己的 WXSS/CSS 控制，且能精确控制"冻结什么、不冻结什么"。
+
+### 6.2 两个机制
+
+| 机制 | 替代 | 位置 | 是否冻结棋盘 |
+|---|---|---|---|
+| **notice** 通知条 | `showToast` / `alert` | 页面顶部居中，约 2.2s 自动消失 | **不冻结**（纯告知） |
+| **prompt** 确认面板 | `showModal` / `confirm` | 覆盖在棋盘之上（`#board-container` 内绝对定位） | **冻结**（见 6.3） |
+
+`prompt` 由 `mode` 驱动，两端 mode 表必须一致：
+
+| mode | 触发 | 确认 | 取消 |
+|---|---|---|---|
+| `recv-undo` | 收到 `request_undo` | 回 `agree_undo`（撤销由**发起方**执行） | 回 `reject_undo` |
+| `recv-restart` | 收到 `request_restart` | 回 `agree_restart` + 本地 `executeRestart()` | 回 `reject_restart` |
+| `send-undo` | 点"悔棋" | 置 pending + 发 `request_undo` + 起超时 | 无动作 |
+| `send-restart` | 点"重开" | 置 pending + 发 `request_restart` + 起超时 | 无动作 |
+| `solo-restart` | 单机模式点"重开" | `executeRestart()` | 无动作 |
+
+### 6.3 棋盘冻结（两道）
+
+1. **覆盖层**：`prompt` 覆盖整个棋盘容器，点击落不到格子上。
+2. **JS 守卫**（双保险，防覆盖层没铺满的极端情况）：`onSquareTap` / `handleSquareClick` 开头
+   `if (promptShow) return`。
+   另外 `requestUndo` / `requestRestart` 开头也 guard，避免"在面板上再叠一个面板"。
+
+### 6.4 版本号
+
+页面角落固定位置显示 `v<APP_VERSION>` 灰色小字，`pointer-events:none` 不拦点击。
+`APP_VERSION` 在两端各有一个常量，**必须与头部注释同步**。
+
+---
+
+## 七、系统性扫描（v1.3.0）与挖出的缺陷
+
+### 7.1 扫描矩阵（比 v1.2.6 更系统）
+
+上一轮是按"观战者视角"顺藤摸瓜；这一轮改成**矩阵穷举**，四维交叉：
+
+| 维度 | 取值 |
+|---|---|
+| 角色 | 白方 / 黑方 / 观战者 / 第三者试图加入 / 断线重连者 |
+| 消息 | `move` `sync` `request_sync` `request_undo` `agree_undo` `reject_undo` `request_restart` `agree_restart` `reject_restart` `room_check` `room_info` `spectator_joined` `spectator_left` `emoji` |
+| 时序 | 单方发起 / 双方同时 / 超时 / 迟到应答 / 断线 |
+| 状态 | 对局中 / 已终局 / 升变未决 / **提示面板显示中** / 悔棋 pending / 重开 pending / 观战 |
+
+重点补的是"**面板显示中**"这一个新状态，以及"迟到的应答"这一时序 —— 上一轮没覆盖。
+
+### 7.2 挖出的缺陷（全部修复）
+
+| # | 缺陷 | 触发场景 | 后果 | 修法 |
+|---|---|---|---|---|
+| 1 | 面板槽位被覆盖 | 收到悔棋请求（面板已弹出），对方又发来重开请求 | 面板被换掉，用户点"同意"实际应答了**另一个**请求 | 面板占用时新请求**按同类型直接拒绝**（busy 保护） |
+| 2 | 交叉保护不跨类型 | 我方悔棋 pending 时，对方发来**重开**请求 | 老代码只拦 undo↔undo，这类请求会照常弹面板 → 交叉操作错乱 | busy 判定统一为"promptShow ‖ 任一 pending"，且**按收到的类型**回对应 reject |
+| 3 | 迟到/重复 `agree_undo` | 悔棋请求已超时取消，对方 `agree` 才到；或 `agree` 重发 | 无条件 `executeUndo()` → **多撤一步** | `agree_undo`/`reject_undo` 仅在 `isUndoPending` 为真时处理 |
+| 4 | 重开没有 pending 概念 | 陈旧 `agree_restart` 到达（如上一次请求的应答） | 无条件 `executeRestart()` → **把正在下的棋重置掉** | 新增 `isRestartPending` + 超时 + `agree_restart`/`reject_restart` 守卫（与悔棋对称） |
+| 5 | 面板可永久冻结棋盘 | 收到请求后面板弹出，但本方一直没点（人离开了） | 棋盘**永久不可操作** | 面板 25s 自动关闭（`PROMPT_TIMEOUT`）；`send-*` 面板超时等同取消 |
+| 6 | 离开页面不清状态 | 面板显示中退出 / 定时器仍在跑 | 卸载后 `setData` 告警；状态残留到下次进入 | `onUnload`（网页 `beforeunload`）清全部定时器与面板态 |
+| 7 | 未决升变遇对端同步 | 升变面板显示中收到 `move`/`sync` | 棋局已换，升变面板残留 → 再点确认会按**旧格**走子 | 同步覆盖棋局时把 `pendingPromotionMove` 作废并关面板 |
+| 8 | 文本注入 | 身份允许自定义，若含 `<`/`&` 等字符 | 网页用 `innerHTML` 会解析成标记 | 通知条/面板一律 `textContent`（小程序 `{{}}` 天然转义） |
+
+### 7.3 本轮明确"知道但没改"的
+
+- **加入房间的 3 秒房满判定窗口**：两人在 3s 窗口内同时加入，理论上可能都认为自己有空位。
+  属既有设计（靠 GoEasy 频道 + 延时收集 `room_info`），要彻底解决需引入服务端仲裁，超出本次范围。
+- **同一身份重名**：两个人都选"👨🏻 米爸"时上下栏无法区分。属身份系统设计，未动。
+
+---
+
+## 八、同步开发约定（防漂移）
 
 - 改 appkey / host / 房间号规则 / 任一消息 type 或字段 → **两边必须同步改**，并同步更新本文件与 README。
 - 新增交互（如新消息类型、新按钮）→ 先定协议，再各自实现，附跨端自测（网页建房↔小程序加入）。

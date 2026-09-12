@@ -5,8 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.2.6 | 最后更新: 2026-09-12
+      版本: 1.3.0 | 最后更新: 2026-09-12
       变更:
+        v1.3.0 - 两端：全部弹窗改为「页面内提示」——通知条 notice（替代 alert/showToast）+
+                 棋盘上的页内确认面板 prompt（替代 confirm/showModal），面板显示期间棋盘冻结；
+                 页面角落显示版本号（灰色小字）；
+                 系统性加固：busy 统一保护（把交叉保护从 undo↔undo 扩到 undo↔restart 跨类型）、
+                 agree 仅在自身 pending 时执行（防重复/迟到 agree 多撤一步或重置进行中的对局）、
+                 重开请求补上 pending 与超时、收到请求的面板超时自动关闭（防永久冻结棋盘）、
+                 离开页面清理面板与定时器、未决升变遇对端同步自动作废
         v1.2.6 - 两端：观战者权限收紧（不再收到/响应悔棋重开、禁止 broadcast 改写对局、不回应 request_sync）；
                  悔棋重开消息加 target 收件人；悔棋请求 20s 超时；交叉悔棋保护；
                  观战者身份栏显示白方/黑方真实身份；
@@ -99,6 +106,40 @@
         .promo-btn { font-size: 20px; padding: 10px; cursor: pointer; background: #f0f0f0; border: 1px solid #ccc; border-radius: 5px; }
         .promo-btn:hover { background: #e0e0e0; }
 
+        /* 页面内通知条（替代 alert，不阻塞操作、无需冻结棋盘） */
+        #notice-banner {
+            position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+            z-index: 500; max-width: 86%;
+            background: rgba(0, 0, 0, 0.78); color: #fff; font-size: 14px;
+            padding: 10px 18px; border-radius: 999px; text-align: center;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+            display: none; pointer-events: none;
+        }
+
+        /* 页内确认面板（替代 confirm）：覆盖棋盘 → 显示期间棋盘冻结 */
+        #prompt-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 70;
+            background: rgba(0, 0, 0, 0.32); display: none;
+            justify-content: center; align-items: center;
+        }
+        #prompt-box {
+            background: #fff; border-radius: 10px; padding: 16px 14px; width: 78%;
+            box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+        }
+        #prompt-title { font-size: 16px; font-weight: bold; text-align: center; color: #333; margin-bottom: 8px; }
+        #prompt-text { font-size: 14px; color: #444; text-align: center; line-height: 1.5; }
+        #prompt-btns { display: flex; gap: 10px; margin-top: 16px; }
+        #prompt-btns button { flex: 1; margin: 0; padding: 10px; font-size: 15px; border: none; border-radius: 6px; cursor: pointer; }
+        #prompt-cancel { background: #ccc; color: #333; }
+        #prompt-confirm { background: #007bff; color: #fff; }
+
+        /* 页面角落版本号（灰色小字） */
+        #version-tag {
+            position: fixed; right: 8px; bottom: 6px; z-index: 5;
+            font-size: 11px; color: #bbb; letter-spacing: 0.5px;
+            pointer-events: none;
+        }
+
         /* 棋盘样式 */
         #board { display: grid; grid-template-columns: repeat(8, 1fr); width: 100%; height: 100%; border: 4px solid #444; border-radius: 2px; }
         .square { aspect-ratio: 1; display: flex; justify-content: center; align-items: center; cursor: pointer; position: relative; }
@@ -139,6 +180,9 @@
 
 <div class="container">
     <h2>♟️ 熊府专用国际象棋</h2>
+
+    <!-- 页面内通知条（替代 alert，不阻塞操作） -->
+    <div id="notice-banner"></div>
 
     <div id="network-warning">⚠️ 检测到通信被拦截。当前仅支持同屏单机对战。</div>
 
@@ -190,6 +234,17 @@
             <button class="promo-btn" onclick="confirmPromotion('b')">♗ 象 (Bishop)</button>
             <button class="promo-btn" style="background: #ffcdd2;" onclick="cancelPromotion()">❌ 取消</button>
         </div>
+        <!-- 页内确认面板（替代 confirm）：覆盖棋盘，显示期间棋盘冻结 -->
+        <div id="prompt-overlay">
+            <div id="prompt-box">
+                <div id="prompt-title"></div>
+                <div id="prompt-text"></div>
+                <div id="prompt-btns">
+                    <button id="prompt-cancel" onclick="onPromptCancel()">取消</button>
+                    <button id="prompt-confirm" onclick="onPromptConfirm()">确认</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- 下方身份栏（己方） -->
@@ -230,6 +285,9 @@
         <button class="btn-warning" id="undo-btn" onclick="requestUndo()">🔙 悔棋</button>
         <button class="btn-danger" id="restart-btn" onclick="requestRestart()">🔄 重开</button>
     </div>
+
+    <!-- 页面角落版本号（灰色小字，不拦截点击） -->
+    <div id="version-tag"></div>
 
 </div>
 
@@ -314,8 +372,20 @@
     var _rolePickerMode = '';
     var _rolePickIdx = 0;
     var undoTimer = null;
+    // 重开请求与悔棋对称：pending 标志 + 超时定时器
+    var isRestartPending = false;
+    var restartTimer = null;
+    // 页内提示状态（通知条 + 确认面板，替代 alert / confirm）
+    var _promptMode = '';
+    var _promptSender = null;
+    var _promptTimer = null;
+    var _noticeTimer = null;
+    var promptShown = false;
     // 观战者用：记录白方/黑方的真实身份
     var _playerIdentities = {};
+
+    // 版本号：页面角落展示，改版本时同步改这里 + 头部注释 + 小程序 index.js
+    var APP_VERSION = '1.3.0';
 
     // ===== 观战者权限（与小程序端同步维护，详见 docs/CONSISTENCY.md）=====
     // 房间是 GoEasy 的一个频道，白方/黑方/观战者都收到全部消息，
@@ -323,6 +393,9 @@
     var SPECTATOR_ALLOWED_SEND = ['request_sync', 'spectator_joined', 'spectator_left', 'room_check', 'room_info', 'emoji'];
     var PLAYER_ONLY_RECV = ['request_undo', 'agree_undo', 'reject_undo', 'request_restart', 'agree_restart', 'reject_restart'];
     var UNDO_REQ_TIMEOUT = 20000;
+    // 页内确认面板自动关闭时间：无人应答时必须自己退场，否则棋盘被永久冻结
+    var PROMPT_TIMEOUT = 25000;
+    var NOTICE_MS = 2200;
 
     function initGoEasy() {
         if (!goeasy) {
@@ -348,7 +421,7 @@
                 if (pendingCreate) { pendingCreate = false; fallbackLocal(); }
                 if (pendingJoin) {
                     pendingJoin = false;
-                    alert('连接失败，无法加入房间');
+                    notice('连接失败，无法加入房间');
                 }
             }
         });
@@ -359,7 +432,14 @@
     }
 
     window.addEventListener('beforeunload', function() {
+        // 离开页面：清掉所有定时器与页内提示状态，避免残留
         if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
+        if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+        if (_noticeTimer) { clearTimeout(_noticeTimer); _noticeTimer = null; }
+        if (_promptTimer) { clearTimeout(_promptTimer); _promptTimer = null; }
+        _promptMode = '';
+        _promptSender = null;
+        promptShown = false;
         if (isSpectator && currentRoom) {
             broadcast({ type: 'spectator_left', identity: myIdentity });
         }
@@ -413,7 +493,7 @@
 
     function doJoinRoom() {
         var roomId = document.getElementById('room-input').value.trim();
-        if(!roomId) return alert("请输入房间号！");
+        if(!roomId) return notice("请输入房间号！");
 
         myColor = "black";
         _checkingRoom = true;
@@ -532,12 +612,12 @@
         var identity;
         if (document.getElementById('role-picker-custom-row').style.display !== 'none' && customIdentity) {
             identity = customIdentity.trim();
-            if (!identity) return alert("请输入自定义名称");
+            if (!identity) return notice("请输入自定义名称");
             _customIdentityConfirmed = identity;
         } else if (_rolePickIdx >= 0) {
             identity = ['👨🏻 米爸', '👩🏻 米妈', '👧🏻 小米米'][_rolePickIdx];
         } else {
-            return alert("请选择一个身份");
+            return notice("请选择一个身份");
         }
         myIdentity = identity;
         document.getElementById('role-picker-mask').style.display = 'none';
@@ -548,11 +628,11 @@
             localStorage.removeItem('chessSave');
             if (connectState === 'ready') { doCreateRoom(); }
             else if (connectState === 'failed') { fallbackLocal(); }
-            else { pendingCreate = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+            else { pendingCreate = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
         } else {
             if (connectState === 'ready') { doJoinRoom(); }
-            else if (connectState === 'failed') { alert('连接失败'); }
-            else { pendingJoin = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+            else if (connectState === 'failed') { notice('连接失败'); }
+            else { pendingJoin = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
         }
     }
     function cancelRolePicker() {
@@ -561,7 +641,7 @@
     }
     function confirmCustomFromPicker() {
         var name = (customIdentity || '').trim();
-        if (!name) return alert("请输入自定义名称");
+        if (!name) return notice("请输入自定义名称");
         _customIdentityConfirmed = name;
         myIdentity = name;
         document.getElementById('role-picker-mask').style.display = 'none';
@@ -572,11 +652,11 @@
             localStorage.removeItem('chessSave');
             if (connectState === 'ready') { doCreateRoom(); }
             else if (connectState === 'failed') { fallbackLocal(); }
-            else { pendingCreate = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+            else { pendingCreate = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
         } else {
             if (connectState === 'ready') { doJoinRoom(); }
-            else if (connectState === 'failed') { alert('连接失败'); }
-            else { pendingJoin = true; alert('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
+            else if (connectState === 'failed') { notice('连接失败'); }
+            else { pendingJoin = true; notice('正在连接服务器…'); if (connectState === 'idle') initGoEasy(); }
         }
     }
     function onCustomIdentityInput() {
@@ -616,6 +696,11 @@
                             return;
                         }
                         selectedSquare = null;
+                        // 对端棋局已覆盖本地：未决的升变选择必须作废，否则升变面板会残留、错位
+                        if (pendingPromotionMove) {
+                            pendingPromotionMove = null;
+                            document.getElementById('promotion-modal').style.display = 'none';
+                        }
                         updateBoardState();
                         if(data.type === 'move' && !isSpectator) handleMoveAftermath(data.moveInfo, false);
                         else updateStatusText();
@@ -657,40 +742,59 @@
                     updateSpectatorDisplay();
                 }
 
-                if(data.type === 'request_undo') {
-                    // 我自己正在等对方回应悔棋，对方也来请求 → 直接拒绝，避免双方交叉撤销导致步数错乱
-                    if (isUndoPending) { broadcast({ type: 'reject_undo', target: data.sender }); return; }
-                    // 应答带回 target，只有发起方能处理
-                    if (confirm(`对手 (${oppIdentity}) 请求退一步棋 (悔棋)，是否同意？`)) {
-                        broadcast({ type: 'agree_undo', target: data.sender });
-                    } else {
-                        broadcast({ type: 'reject_undo', target: data.sender });
+                // ===== 悔棋/重开：请求（统一 busy 保护）=====
+                if(data.type === 'request_undo' || data.type === 'request_restart') {
+                    // 我这边已有未决请求，或正显示着别的提示 → 按同类型直接拒绝。
+                    // 既防"面板被新请求覆盖后点同意却应答了另一个请求"的错位，
+                    // 也把原来只覆盖 undo↔undo 的交叉保护扩展到 undo↔restart 跨类型。
+                    if (isBusy()) {
+                        broadcast({ type: data.type === 'request_undo' ? 'reject_undo' : 'reject_restart', target: data.sender });
+                        return;
                     }
-                }
-                if(data.type === 'agree_undo') {
-                    clearUndoPending();
-                    executeUndo();
-                }
-                if(data.type === 'reject_undo') {
-                    clearUndoPending();
-                    alert("对手无情地拒绝了你的悔棋请求。");
-                    updateStatusText();
+                    if (data.type === 'request_undo') {
+                        showPrompt({
+                            mode: 'recv-undo', sender: data.sender, title: '悔棋请求',
+                            text: '对手（' + oppIdentity + '）请求退一步棋，是否同意？',
+                            confirmText: '同意', cancelText: '拒绝'
+                        });
+                    } else {
+                        showPrompt({
+                            mode: 'recv-restart', sender: data.sender, title: '重开请求',
+                            text: '对手（' + oppIdentity + '）请求重开一局，是否同意？',
+                            confirmText: '同意', cancelText: '拒绝'
+                        });
+                    }
+                    return;
                 }
 
-                if(data.type === 'request_restart') {
-                    if (confirm(`对手 (${oppIdentity}) 请求重开一局，是否同意？`)) {
-                        broadcast({ type: 'agree_restart', target: data.sender });
-                        executeRestart();
-                    } else {
-                        broadcast({ type: 'reject_restart', target: data.sender });
-                    }
+                // ===== 悔棋/重开：应答 =====
+                // 只有"我确实在等这个应答"时才执行：防重复/迟到 agree 多撤一步或重置进行中的对局，
+                // 也处理"请求已超时取消后对方 agree 才到"的竞态。
+                if(data.type === 'agree_undo') {
+                    if (!isUndoPending) return;
+                    clearUndoPending();
+                    executeUndo();
+                    return;
+                }
+                if(data.type === 'reject_undo') {
+                    if (!isUndoPending) return;
+                    clearUndoPending();
+                    notice("对手拒绝了你的悔棋请求。");
+                    updateStatusText();
+                    return;
                 }
                 if(data.type === 'agree_restart') {
+                    if (!isRestartPending) return;
+                    clearRestartPending();
                     executeRestart();
+                    return;
                 }
                 if(data.type === 'reject_restart') {
-                    alert("对手想接着下，拒绝了重开请求。");
+                    if (!isRestartPending) return;
+                    clearRestartPending();
+                    notice("对手拒绝了重开请求。");
                     updateStatusText();
+                    return;
                 }
 
                 if(data.type === 'emoji') {
@@ -717,6 +821,94 @@
         updateBoardState();
     }
 
+    // ===== 页内提示（替代 alert / confirm）=====
+    // 通知条：非阻塞，自动消失
+    function notice(text, ms) {
+        if (!text) return;
+        var el = document.getElementById('notice-banner');
+        if (!el) return;
+        if (_noticeTimer) clearTimeout(_noticeTimer);
+        // 用 textContent 而不是 innerHTML：身份允许自定义，可能含 < > & 等字符
+        el.textContent = text;
+        el.style.display = 'block';
+        _noticeTimer = setTimeout(function () {
+            _noticeTimer = null;
+            el.style.display = 'none';
+            el.textContent = '';
+        }, ms || NOTICE_MS);
+    }
+
+    // 页内确认面板：覆盖棋盘 → 显示期间棋盘冻结（另有 handleSquareClick 守卫做双保险）
+    function showPrompt(opts) {
+        if (_promptTimer) { clearTimeout(_promptTimer); _promptTimer = null; }
+        _promptMode = opts.mode || '';
+        _promptSender = opts.sender || null;
+        var titleEl = document.getElementById('prompt-title');
+        titleEl.textContent = opts.title || '';
+        titleEl.style.display = opts.title ? 'block' : 'none';
+        document.getElementById('prompt-text').textContent = opts.text || '';
+        var cancelBtn = document.getElementById('prompt-cancel');
+        cancelBtn.textContent = (opts.cancelText == null) ? '取消' : opts.cancelText;
+        cancelBtn.style.display = (opts.cancelText === '') ? 'none' : 'block';
+        document.getElementById('prompt-confirm').textContent = opts.confirmText || '确认';
+        promptShown = true;
+        document.getElementById('prompt-overlay').style.display = 'flex';
+        // 无人应答时必须自动退场，否则棋盘会被永久冻结
+        _promptTimer = setTimeout(function () {
+            _promptTimer = null;
+            resolvePrompt(false);
+        }, PROMPT_TIMEOUT);
+    }
+
+    function hidePrompt() {
+        if (_promptTimer) { clearTimeout(_promptTimer); _promptTimer = null; }
+        _promptMode = '';
+        _promptSender = null;
+        promptShown = false;
+        var ov = document.getElementById('prompt-overlay');
+        if (ov) ov.style.display = 'none';
+    }
+
+    function onPromptConfirm() { resolvePrompt(true); }
+    function onPromptCancel() { resolvePrompt(false); }
+
+    // 统一处理面板结果：先关面板再执行动作，避免连点第二次重复触发
+    function resolvePrompt(ok) {
+        var mode = _promptMode;
+        var sender = _promptSender;
+        hidePrompt();
+        if (!mode) return;
+        if (mode === 'recv-undo') {
+            broadcast(ok ? { type: 'agree_undo', target: sender } : { type: 'reject_undo', target: sender });
+        } else if (mode === 'recv-restart') {
+            if (ok) {
+                broadcast({ type: 'agree_restart', target: sender });
+                executeRestart();
+            } else {
+                broadcast({ type: 'reject_restart', target: sender });
+            }
+        } else if (mode === 'send-undo') {
+            if (!ok) return;
+            isUndoPending = true;
+            var btn = document.getElementById('undo-btn');
+            if (btn) btn.innerText = '⏳ 等待同意';
+            broadcast({ type: 'request_undo', target: oppColor() });
+            startUndoTimer();
+        } else if (mode === 'send-restart') {
+            if (!ok) return;
+            isRestartPending = true;
+            broadcast({ type: 'request_restart', target: oppColor() });
+            startRestartTimer();
+        } else if (mode === 'solo-restart') {
+            if (ok) executeRestart();
+        }
+    }
+
+    // 有"未决请求"或"正在显示的提示" → 期间不再受理新请求、不再叠加提示
+    function isBusy() {
+        return !!(promptShown || isUndoPending || isRestartPending);
+    }
+
     // 我在等的悔棋请求有结果了（同意/拒绝/超时），统一复位
     function clearUndoPending() {
         isUndoPending = false;
@@ -734,7 +926,23 @@
             undoTimer = null;
             var btn = document.getElementById('undo-btn');
             if (btn) btn.innerText = "🔙 悔棋";
-            alert("对方未响应，悔棋请求已取消。");
+            notice("对方未响应，悔棋请求已取消。");
+        }, UNDO_REQ_TIMEOUT);
+    }
+
+    // 重开与悔棋对称：自己发起的重开请求也要有 pending + 超时
+    function clearRestartPending() {
+        isRestartPending = false;
+        if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+    }
+
+    function startRestartTimer() {
+        if (restartTimer) clearTimeout(restartTimer);
+        restartTimer = setTimeout(function() {
+            if (!isRestartPending) return;
+            isRestartPending = false;
+            restartTimer = null;
+            notice("对方未响应，重开请求已取消。");
         }, UNDO_REQ_TIMEOUT);
     }
 
@@ -751,25 +959,19 @@
     }
 
     function requestUndo() {
-        if (isSpectator) return alert("观战中不能悔棋。");
+        if (promptShown) return;   // 提示面板显示中不叠加新提示
+        if (isSpectator) return notice("观战中不能悔棋。");
         var historyLen = game.history().length;
-        if (historyLen === 0) return alert("已经是开局状态了，无棋可悔。");
-        if (isUndoPending) return alert("已发送悔棋请求，请等待对方响应后再试。");
+        if (historyLen === 0) return notice("已经是开局状态了，无棋可悔。");
+        if (isUndoPending) return notice("已发送悔棋请求，请等待对方响应后再试。");
 
         if (isNetworkReady && currentRoom !== "") {
             var currentTurn = game.turn() === 'w' ? 'white' : 'black';
             if (currentTurn === myColor && historyLen < 2) {
-                return alert("你还没有走棋，无法悔棋。");
+                return notice("你还没有走棋，无法悔棋。");
             }
-
-            if (confirm("发送悔棋请求给对手？")) {
-                isUndoPending = true;
-                var btn = document.getElementById('undo-btn');
-                if (btn) btn.innerText = "⏳ 等待同意";
-                // target 指定收件人：只有对手会处理，房间里的观战者与其他成员一律忽略
-                broadcast({ type: 'request_undo', target: oppColor() });
-                startUndoTimer();
-            }
+            // 用页内面板代替 confirm；确认后走 send-undo 分支
+            showPrompt({ mode: 'send-undo', title: '悔棋', text: '发送悔棋请求给对手？', confirmText: '发送', cancelText: '取消' });
         } else {
             executeUndo();
         }
@@ -797,19 +999,20 @@
     }
 
     function requestRestart() {
-        if (isSpectator) return alert("观战中不能重开。");
+        if (promptShown) return;   // 提示面板显示中不叠加新提示
+        if (isSpectator) return notice("观战中不能重开。");
         if (isNetworkReady && currentRoom !== "") {
-            if (confirm("发送重开请求给对手？")) {
-                broadcast({ type: 'request_restart', target: oppColor() });
-            }
+            if (isRestartPending) return notice("已发送重开请求，请等待对方响应。");
+            showPrompt({ mode: 'send-restart', title: '重开', text: '发送重开请求给对手？', confirmText: '发送', cancelText: '取消' });
         } else {
-            if (confirm("确定要重新开始一局吗？")) executeRestart();
+            showPrompt({ mode: 'solo-restart', title: '重开', text: '确定要重新开始一局吗？', confirmText: '确定', cancelText: '取消' });
         }
     }
 
     function executeRestart() {
         if (isSpectator) return;   // 观战者只读，不得重置对局
         clearUndoPending();
+        clearRestartPending();
         game.reset();
         selectedSquare = null;
         updateBoardState();
@@ -1014,6 +1217,8 @@
     }
 
     function handleSquareClick(e) {
+        // 页内确认面板显示期间：棋盘冻结，不接受任何落子操作
+        if (promptShown) return;
         if (isSpectator || game.game_over() || pendingPromotionMove) return;
 
         if (isNetworkReady && currentRoom !== "") {
@@ -1145,6 +1350,8 @@
         //（getElementById 返回 null 会抛错，导致 checkSavedGame() 永远执行不到，
         //  "恢复刚才断线的对局"按钮就永远不显示）
         checkSavedGame();
+        var vt = document.getElementById('version-tag');
+        if (vt) vt.textContent = 'v' + APP_VERSION;
     }
 </script>
 </body>
