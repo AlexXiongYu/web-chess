@@ -5,8 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>熊府专用国际象棋</title>
     <!--
-      版本: 1.3.2 | 最后更新: 2026-09-12
+      版本: 1.3.3 | 最后更新: 2026-09-12
       变更:
+        v1.3.3 - 两端：清理 libs/chess.min.js 末尾指向 jsDelivr /sm/xxx.map 的
+                 sourceMappingURL 死引用。该 .map 文件并不存在，浏览器会 404、
+                 小程序打包时 miniprogram-ci 读不到还会抛
+                 TypeError [ERR_INVALID_ARG_TYPE]。纯噪音清理，无功能变更。
         v1.3.2 - 两端：身份「撞名自愈」硬保证。v1.3.1 把身份选择挪到进房后，靠"已被占用"
                  列表拦重复；但两人若不是先后选、而是同时选同一个身份，这条路就漏了——
                  对方确认身份的消息还在路上，本地列表仍是空的（未确认身份时对 room_check
@@ -414,7 +418,7 @@
     var _playerIdentities = {};
 
     // 版本号：页面角落展示，改版本时同步改这里 + 头部注释 + 小程序 index.js
-    var APP_VERSION = '1.3.2';
+    var APP_VERSION = '1.3.3';
 
     // ===== 观战者权限（与小程序端同步维护，详见 docs/CONSISTENCY.md）=====
     // 房间是 GoEasy 的一个频道，白方/黑方/观战者都收到全部消息，
